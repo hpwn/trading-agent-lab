@@ -51,6 +51,14 @@ def _pnl_from_signals(df: pd.DataFrame, sig: pd.Series, size_pct: float = 10.0) 
     return pd.DataFrame({"ret": strat_ret, "eq": eq})
 
 
+def _safe_metric_value(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if math.isfinite(numeric):
+            return numeric
+    return None
+
+
 def load_config(config_path: str):
     import yaml
 
@@ -92,6 +100,7 @@ def run_backtest(config_path: str):
     sig = strat.generate_signals(df)
     res = _pnl_from_signals(df, sig, size_pct=size_pct)
     kpis = compute_kpis(res["ret"], res["eq"])
+    safe_metrics = {name: _safe_metric_value(value) for name, value in kpis.items()}
 
     storage_cfg = cfg.get("storage", {})
     db_url = storage_cfg.get("db_url", "sqlite:///./lab.db")
@@ -115,20 +124,13 @@ def run_backtest(config_path: str):
             "config_hash": config_hash,
         },
         [
-            {"run_id": run_id, "name": name, "value": float(value)}
-            for name, value in kpis.items()
+            {"run_id": run_id, "name": name, "value": safe_metrics[name]}
+            for name in kpis
         ],
     )
 
     run_artifacts = artifacts_dir / "runs" / run_id
     run_artifacts.mkdir(parents=True, exist_ok=True)
-    safe_metrics = {}
-    for name, value in kpis.items():
-        if isinstance(value, (int, float)):
-            numeric = float(value)
-            safe_metrics[name] = numeric if math.isfinite(numeric) else None
-        else:
-            safe_metrics[name] = None
     (run_artifacts / "metrics.json").write_text(json.dumps(safe_metrics, indent=2))
     (run_artifacts / "config.snapshot.yaml").write_text(expanded_config)
 
