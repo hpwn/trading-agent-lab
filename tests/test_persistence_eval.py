@@ -1,4 +1,6 @@
-import os, json, types
+import os
+import json
+import types
 from pathlib import Path
 from typer.testing import CliRunner
 from tal.cli import app

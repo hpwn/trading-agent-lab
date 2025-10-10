@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
 
 
 def make_price_df(n=60, start=100.0, step=0.5, up_only=False):

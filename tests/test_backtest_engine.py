@@ -1,4 +1,3 @@
-import pandas as pd
 import types
 import tal.backtest.engine as engine
 from typer.testing import CliRunner

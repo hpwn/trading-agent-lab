@@ -12,7 +12,9 @@ def _rsi(close: pd.Series, n: int) -> pd.Series:
 
 class RSIMeanReversion(Strategy):
     def __init__(self, rsi_len=14, oversold=30, overbought=70):
-        self.rsi_len = rsi_len; self.oversold = oversold; self.overbought = overbought
+        self.rsi_len = rsi_len
+        self.oversold = oversold
+        self.overbought = overbought
 
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:
         rsi = _rsi(df["Close"], self.rsi_len)
