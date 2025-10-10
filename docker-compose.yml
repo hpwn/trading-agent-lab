@@ -1,0 +1,6 @@
+services:
+  lab:
+    build: .
+    env_file: .env
+    volumes: ["./artifacts:/app/artifacts"]
+    command: ["orchestrate", "--config", "config/base.yaml"]

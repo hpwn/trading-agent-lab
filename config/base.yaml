@@ -1,0 +1,27 @@
+env: ${ENV}
+universe:
+  symbols: ["${DATA_SYMBOL}"]
+data:
+  timeframe: "1d"
+  lookback_bars: 1000
+risk:
+  max_drawdown_pct: ${MAX_DRAWDOWN_PCT}
+  max_position_pct: 50
+strategy:
+  name: "rsi_mean_rev"
+  params:
+    rsi_len: 14
+    oversold: 30
+    overbought: 70
+    size_pct: 10
+evaluation:
+  kpis: ["pnl", "profit_factor", "sharpe", "max_dd", "win_rate"]
+orchestrator:
+  market_hours:
+    timezone: "America/New_York"
+    open: "09:30"
+    close: "16:00"
+  cycle_minutes: 5
+storage:
+  db_url: "sqlite:///./lab.db"
+  artifacts_dir: "./artifacts"

@@ -1,0 +1,28 @@
+[project]
+name = "trading-agent-lab"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "pandas>=2.2",
+  "numpy>=1.26",
+  "typer>=0.12",
+  "pyyaml>=6.0",
+  "pydantic>=2.7",
+  "SQLAlchemy>=2.0",
+  "yfinance>=0.2",
+  "scipy>=1.11",
+  "optuna>=3.6"
+]
+
+[project.scripts]
+tal = "tal.cli:app"
+
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
