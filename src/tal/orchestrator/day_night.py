@@ -51,6 +51,8 @@ def market_open_now(cfg) -> bool:
 
 def run_loop(config_path: str):
     cfg = _load_cfg(config_path)
+    print("[BOOT] Orchestrator started; cycle_minutes="
+          f"{cfg['orchestrator']['cycle_minutes']}", flush=True)
     interval = int(cfg["orchestrator"]["cycle_minutes"])
     while True:
         if market_open_now(cfg):

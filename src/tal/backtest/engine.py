@@ -26,7 +26,7 @@ def _load_env(env_file: str | None = None) -> None:
 
 
 def _load_data(symbol: str, lookback_bars: int, tf: str) -> pd.DataFrame:
-    df = yf.download(symbol, period="max", interval="1d")  # simple daily
+    df = yf.download(symbol, period="max", interval="1d", auto_adjust=True)  # simple daily
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.droplevel(-1)
     return df.tail(lookback_bars).dropna()

@@ -8,7 +8,7 @@ def _rsi(close: pd.Series, n: int) -> pd.Series:
     down = -delta.clip(upper=0)
     rs = up.rolling(n).mean() / down.rolling(n).mean().replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(method="bfill").fillna(50)
+    return rsi.bfill().fillna(50)
 
 class RSIMeanReversion(Strategy):
     def __init__(self, rsi_len=14, oversold=30, overbought=70):
