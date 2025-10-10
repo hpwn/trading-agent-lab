@@ -16,8 +16,7 @@ class RSIMeanReversion(Strategy):
 
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:
         rsi = _rsi(df["Close"], self.rsi_len)
-        long_sig  = (rsi < self.oversold).astype(int)
-        flat_sig  = ((rsi >= self.oversold) & (rsi <= self.overbought)).astype(int) * 0
+        long_sig = (rsi <= self.overbought).astype(int)
         short_sig = (rsi > self.overbought).astype(int) * -1
-        sig = long_sig + flat_sig + short_sig
+        sig = long_sig + short_sig
         return sig.reindex(df.index).fillna(0)

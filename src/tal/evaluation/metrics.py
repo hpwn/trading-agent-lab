@@ -22,13 +22,13 @@ def profit_factor(returns: pd.Series) -> float:
 
 
 def max_drawdown(equity: pd.Series) -> float:
-    """Return the maximum peak-to-trough drawdown (positive number)."""
+    """Return the maximum peak-to-trough drawdown as a negative number."""
 
     if equity.empty:
         return 0.0
     roll_max = equity.cummax()
     dd = equity / roll_max - 1.0
-    return float(abs(dd.min()))
+    return float(dd.min())
 
 
 def sharpe_ratio(returns: pd.Series) -> float:

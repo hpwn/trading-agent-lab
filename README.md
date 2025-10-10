@@ -39,3 +39,20 @@ cp config/base.yaml config/dev.yaml
 # set open: "00:01"  and close: "23:59"
 docker compose run --rm lab tal orchestrate --config config/dev.yaml
 ```
+
+## Tests & CI
+
+Local:
+```bash
+python -m pip install -U pip
+pip install -e .[test]
+pytest
+```
+
+CI runs on PRs (Python 3.11/3.12) and also builds the Docker image. Lint/type checks use Ruff & mypy:
+
+```bash
+pip install -e .[lint]
+ruff check .
+mypy --ignore-missing-imports src
+```

@@ -59,15 +59,23 @@ def _safe_metric_value(value: object) -> float | None:
     return None
 
 
+DEFAULT_CONFIG_PATH = Path("config/base.yaml")
+
+
 def load_config(config_path: str):
     import yaml
 
     _load_env()
-    raw = Path(config_path).read_text()
+    requested_path = Path(config_path)
+    override = os.environ.get("TAL_ACTIVE_CONFIG")
+    if override and requested_path == DEFAULT_CONFIG_PATH:
+        requested_path = Path(override)
+    raw = requested_path.read_text()
     expanded = raw
     for k, v in os.environ.items():
         expanded = expanded.replace("${" + k + "}", v)
     cfg = yaml.safe_load(expanded)
+    os.environ["TAL_ACTIVE_CONFIG"] = str(requested_path.resolve())
     return cfg, expanded
 
 

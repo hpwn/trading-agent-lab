@@ -67,7 +67,7 @@ def build_leaderboard(engine, since_iso: str) -> pd.DataFrame:
     leaderboard[metric_cols] = leaderboard[metric_cols].apply(pd.to_numeric, errors="coerce")
     leaderboard = leaderboard.sort_values(
         by=["profit_factor", "sharpe", "max_dd"],
-        ascending=[False, False, True],
+        ascending=[False, False, False],
         na_position="last",
     ).reset_index(drop=True)
     return leaderboard

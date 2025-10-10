@@ -26,3 +26,24 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "freezegun>=1.5",
+  "pandas>=2.2",
+  "numpy>=1.26",
+  "typer>=0.19",
+  "yfinance>=0.2"
+]
+lint = [
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "types-PyYAML",
+  "types-requests"
+]
+
+[tool.pytest.ini_options]
+addopts = "-q --cov=tal --cov-report=term-missing"
+testpaths = ["tests"]
