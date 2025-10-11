@@ -3,6 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+import pandas as pd
+
 
 @dataclass
 class Order:
@@ -10,6 +12,7 @@ class Order:
     side: str  # "buy" | "sell"
     qty: float
     type: str = "market"
+    ref_price: float | None = None  # optional price hint used by paper broker
 
 
 @dataclass
@@ -37,3 +40,6 @@ class Broker(ABC):
 class MarketData(ABC):
     @abstractmethod
     def latest_price(self, symbol: str) -> float: ...
+
+    @abstractmethod
+    def history(self, symbol: str, bars: int) -> "pd.DataFrame": ...

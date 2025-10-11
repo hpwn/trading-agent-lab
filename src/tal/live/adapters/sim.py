@@ -2,15 +2,47 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
+
 from ..base import Broker, Fill, MarketData, Order
 
 
 class SimMarketData(MarketData):
-    def __init__(self, price_map: dict[str, float]):
-        self.price_map = price_map
+    def __init__(self, series_map: dict[str, pd.Series] | dict[str, list[float]]):
+        self._series: dict[str, pd.Series] = {}
+        self._cursor: dict[str, int] = {}
+        for symbol, values in series_map.items():
+            if isinstance(values, pd.Series):
+                ser = values.rename("Close")
+            else:
+                ser = pd.Series(list(values), name="Close")
+            if not len(ser):
+                ser = pd.Series([100.0], name="Close")
+            if not isinstance(ser.index, pd.RangeIndex):
+                ser = ser.reset_index(drop=True)
+            self._series[symbol] = ser.astype(float)
+            self._cursor[symbol] = len(self._series[symbol]) - 1
 
     def latest_price(self, symbol: str) -> float:
-        return float(self.price_map.get(symbol, 100.0))
+        ser = self._series.get(symbol)
+        if ser is None or ser.empty:
+            return 100.0
+        idx = self._cursor.get(symbol, len(ser) - 1)
+        idx = max(0, min(idx, len(ser) - 1))
+        self._cursor[symbol] = idx
+        return float(ser.iloc[idx])
+
+    def history(self, symbol: str, bars: int) -> pd.DataFrame:
+        ser = self._series.get(symbol)
+        if ser is None or ser.empty:
+            ser = pd.Series([100.0] * max(1, bars), name="Close")
+        tail = ser.iloc[-bars:] if bars > 0 else ser
+        if bars > 0 and len(tail) < bars:
+            last_val = float(tail.iloc[-1]) if len(tail) else 100.0
+            pad_len = bars - len(tail)
+            pad = pd.Series([last_val] * pad_len, name="Close")
+            tail = pd.concat([pad, tail], ignore_index=True)
+        return tail.rename("Close").to_frame()
 
 
 class SimBroker(Broker):
@@ -40,7 +72,7 @@ class SimBroker(Broker):
     def submit(self, order: Order) -> Fill:
         import time
 
-        px = self._price(order.symbol)
+        px = float(order.ref_price) if order.ref_price is not None else self._price(order.symbol)
         slip = px * (self.slippage_bps / 1e4)
         exec_px = px + slip if order.side == "buy" else px - slip
         if order.side == "buy":

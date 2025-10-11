@@ -63,6 +63,17 @@ pip install -e ".[alpaca]"
 ```
 
 Tests and CI only exercise the simulator—no network calls are made.
+
+### Live signal routing & sizing
+
+- Signals are produced by the configured strategy (defaults to `rsi_mean_rev`) using
+  the most recent `live.bars` closes for the first universe symbol.
+- Current routing maps signals to targets as: `+1` → long position sized by
+  `strategy.params.size_pct`, `0/-1` → flat (no shorts yet). The live position is
+  additionally capped by `live.max_position_pct` of current equity.
+- Simulated fills are routed through the in-memory broker to reach the target.
+- Tests can provide deterministic price history by passing a price map directly to
+  `tal.live.wrapper.run_live_once` (see `tests/test_live_signal_routing.py`).
 ## Docker Quickstart
 
 ```bash
