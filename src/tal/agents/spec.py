@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional
 
 
 class Components(BaseModel):
@@ -45,6 +46,14 @@ class StorageCfg(BaseModel):
     artifacts_dir: str = "./artifacts"
 
 
+class LiveCfg(BaseModel):
+    broker: str = "sim"
+    cash: float = 10_000
+    commission: float = 0.0
+    slippage_bps: float = 1.0
+    ledger_dir: str = "./artifacts/live"
+
+
 class AgentSpec(BaseModel):
     id: str
     version: int = 0
@@ -64,3 +73,4 @@ class AgentSpec(BaseModel):
     evaluation: EvalCfg = EvalCfg()
     orchestrator: OrchestratorCfg = OrchestratorCfg()
     storage: StorageCfg = StorageCfg()
+    live: LiveCfg = LiveCfg()

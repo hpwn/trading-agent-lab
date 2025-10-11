@@ -1,10 +1,12 @@
 from pathlib import Path
+import json
 import tempfile
 
 import typer
 import yaml
 
 from tal.agents.registry import load_agent_config, to_engine_config
+from tal.live.wrapper import run_live_once
 from tal.orchestrator.day_night import run_loop
 
 app = typer.Typer(help="Trading Agent Lab (CLI only)")
@@ -63,6 +65,20 @@ def backtest(config: str = "config/base.yaml"):
     run_backtest(config)
 
 
+@app.command(name="live")
+def live_once(config: str = typer.Option(..., "--config", help="Path to engine config YAML.")):
+    """Execute one live step using the configured broker (paper by default)."""
+
+    from tal.backtest.engine import load_config
+
+    cfg, _ = load_config(config)
+    if isinstance(cfg.get("universe"), list) or "components" in cfg:
+        spec = load_agent_config(config)
+        cfg = to_engine_config(spec)
+    res = run_live_once(cfg)
+    print(json.dumps(res, indent=2))
+
+
 @app.command(name="eval")
 def evaluate(
     since: str = typer.Option(
@@ -117,6 +133,16 @@ def evaluate(
         typer.echo(format_json(leaderboard))
     else:
         typer.echo(format_table(leaderboard))
+
+
+@agent_app.command("live")
+def agent_live(config: str = typer.Option(..., "--config", help="Path to agent config YAML.")):
+    """Run one live step for a specific AgentSpec YAML."""
+
+    spec = load_agent_config(config)
+    engine_cfg = to_engine_config(spec)
+    res = run_live_once(engine_cfg)
+    print(json.dumps(res, indent=2))
 
 
 if __name__ == "__main__":

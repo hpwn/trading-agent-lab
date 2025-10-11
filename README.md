@@ -44,6 +44,25 @@ For a one-off backtest inside Docker without editing the compose file:
 ```bash
 docker compose run --rm lab tal agent backtest --config config/agents/codex_seed.yaml
 ```
+
+## Live (paper)
+
+The new live wrapper provides a deterministic “paper” execution path that reuses
+the engine configuration. It defaults to the in-repo simulator so tests remain
+offline and reproducible.
+
+- `tal live --config config/agents/codex_seed.yaml`
+- `tal agent live --config config/agents/codex_seed.yaml`
+
+The broker is selected via the `live` block in your engine or agent config
+(`sim` for the offline simulator, `alpaca` planned for a future release). Real
+broker connectivity will be gated behind an optional extra:
+
+```bash
+pip install -e ".[alpaca]"
+```
+
+Tests and CI only exercise the simulator—no network calls are made.
 ## Docker Quickstart
 
 ```bash

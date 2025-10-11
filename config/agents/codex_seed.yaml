@@ -21,3 +21,9 @@ orchestrator:
 storage:
   db_url: "sqlite:///./lab.db"
   artifacts_dir: "./artifacts"
+live:
+  broker: sim
+  cash: 10000
+  commission: 0.0
+  slippage_bps: 1.0
+  ledger_dir: "./artifacts/live"
