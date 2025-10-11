@@ -37,3 +37,6 @@ class Broker(ABC):
 class MarketData(ABC):
     @abstractmethod
     def latest_price(self, symbol: str) -> float: ...
+
+    @abstractmethod
+    def history(self, symbol: str, bars: int) -> "pd.DataFrame": ...
