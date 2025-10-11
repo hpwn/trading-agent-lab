@@ -55,14 +55,39 @@ offline and reproducible.
 - `tal agent live --config config/agents/codex_seed.yaml`
 
 The broker is selected via the `live` block in your engine or agent config
-(`sim` for the offline simulator, `alpaca` planned for a future release). Real
-broker connectivity will be gated behind an optional extra:
+(`sim` for the offline simulator, `alpaca` for Alpaca's paper trading API).
+Real broker connectivity remains behind an optional extra:
 
 ```bash
 pip install -e ".[alpaca]"
 ```
 
 Tests and CI only exercise the simulator—no network calls are made.
+
+### Alpaca (paper) quickstart
+
+The runtime adapter reads credentials from the environment. A `.env` file
+containing the following keys is sufficient for local testing:
+
+```
+ALPACA_API_KEY_ID=...
+ALPACA_API_SECRET_KEY=...
+ALPACA_BASE_URL=https://paper-api.alpaca.markets
+```
+
+- `ALPACA_BASE_URL` controls the trading API host (defaults to Alpaca's paper or live
+  trading endpoints based on `live.paper`).
+- `ALPACA_DATA_BASE_URL` controls the market data host (defaults to
+  `https://data.alpaca.markets`).
+
+Point the live CLI to the bundled paper config to try the integration:
+
+```bash
+tal live --config config/live/alpaca_paper.yaml
+```
+
+The config enables guardrails—max order notional, position sizing caps, and
+daily loss protection—all enforced locally before the request is sent to Alpaca.
 
 ### Live signal routing & sizing
 

@@ -2,27 +2,44 @@ from __future__ import annotations
 
 import importlib
 import math
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Tuple
 
 import pandas as pd
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, model_validator
 
-from .adapters.sim import SimBroker, SimMarketData
+from .adapters import AlpacaClient, SimMarketData, build_broker
 from .base import Order
 from tal.storage.db import get_engine, record_run
 
 
 class LiveCfg(BaseModel):
-    broker: str = "sim"  # "sim" | "alpaca" (future)
+    model_config = ConfigDict(extra="allow")
+
+    adapter: str = "sim"
+    broker: str | None = None  # backwards compatibility alias
     cash: float = 10_000
     commission: float = 0.0
     slippage_bps: float = 1.0
     ledger_dir: str = "./artifacts/live"
     bars: int = 200
     max_position_pct: float = 50.0
+    max_order_usd: float | None = None
+    max_daily_loss_pct: float | None = None
+    paper: bool = True
+    base_url: str | None = None
+    symbol: str | None = None
+    size_pct: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_adapter(cls, values: Any) -> Any:
+        if isinstance(values, dict) and "adapter" not in values and "broker" in values:
+            values = {**values, "adapter": values["broker"]}
+        return values
 
 
 def _load_strategy(strategy_name: str):
@@ -32,18 +49,37 @@ def _load_strategy(strategy_name: str):
     raise ValueError(f"Unknown strategy: {strategy_name}")
 
 
-def run_live_once(engine_cfg: dict, price_map: dict[str, list[float]] | None = None) -> dict[str, Any]:
+def _select_alpaca_urls(
+    *, paper: bool, trading_env: str | None, data_env: str | None
+) -> Tuple[str, str]:
+    """Decide trading and data base URLs for Alpaca clients."""
+
+    trading_url = (
+        trading_env
+        or ("https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets")
+    )
+    data_url = data_env or "https://data.alpaca.markets"
+    return trading_url, data_url
+
+
+def run_live_once(
+    engine_cfg: dict,
+    price_map: dict[str, list[float]] | None = None,
+    *,
+    alpaca_client: AlpacaClient | None = None,
+) -> dict[str, Any]:
     """Execute a single deterministic live trading step."""
 
     ts_start = datetime.now(timezone.utc)
     live_cfg = LiveCfg(**engine_cfg.get("live", {}))
     universe = engine_cfg.get("universe", {})
+    symbols: list[str] = []
     if isinstance(universe, dict):
-        symbols = universe.get("symbols", ["SPY"])
+        symbols = list(universe.get("symbols", []))
     elif isinstance(universe, (list, tuple)):
-        symbols = list(universe) or ["SPY"]
-    else:
-        symbols = ["SPY"]
+        symbols = list(universe)
+    if not symbols and live_cfg.symbol:
+        symbols = [live_cfg.symbol]
     if not symbols:
         symbols = ["SPY"]
     bars = max(1, int(live_cfg.bars))
@@ -56,12 +92,29 @@ def run_live_once(engine_cfg: dict, price_map: dict[str, list[float]] | None = N
             prices = [100.0] * bars
         history_map[symbol] = prices
     md = SimMarketData(history_map)
-    br = SimBroker(
-        live_cfg.cash,
-        Path(live_cfg.ledger_dir),
-        commission=live_cfg.commission,
-        slippage_bps=live_cfg.slippage_bps,
-    )
+
+    broker_kwargs: dict[str, Any]
+    broker_client: AlpacaClient | None = None
+    if live_cfg.adapter == "alpaca":
+        broker_kwargs = {
+            "slippage_bps": live_cfg.slippage_bps,
+            "max_order_usd": live_cfg.max_order_usd,
+            "max_position_pct": live_cfg.max_position_pct,
+            "max_daily_loss_pct": live_cfg.max_daily_loss_pct,
+        }
+        broker_client = alpaca_client or _build_alpaca_client_from_env(
+            paper=live_cfg.paper,
+            base_url=live_cfg.base_url,
+        )
+    else:
+        broker_kwargs = {
+            "cash": live_cfg.cash,
+            "ledger_dir": Path(live_cfg.ledger_dir),
+            "commission": live_cfg.commission,
+            "slippage_bps": live_cfg.slippage_bps,
+        }
+    br = build_broker(live_cfg.adapter, client=broker_client, **broker_kwargs)
+
     sym = symbols[0]
     strat_cfg = engine_cfg.get("strategy", {})
     strat_name = strat_cfg.get("name", "rsi_mean_rev")
@@ -75,12 +128,15 @@ def run_live_once(engine_cfg: dict, price_map: dict[str, list[float]] | None = N
     last_sig = int(sig_series.iloc[-1]) if not sig_series.empty else 0
 
     px = md.latest_price(sym)
+    if live_cfg.adapter == "alpaca":
+        px = br.price(sym)  # type: ignore[attr-defined]
     current_pos = br.position(sym)
     equity = br.cash() + current_pos * px
     cap = equity * (live_cfg.max_position_pct / 100.0)
     target_qty = 0
     if last_sig > 0:
-        size_pct = float(params.get("size_pct", 10.0)) / 100.0
+        live_size_pct = live_cfg.size_pct if live_cfg.size_pct is not None else params.get("size_pct")
+        size_pct = float(live_size_pct if live_size_pct is not None else 10.0) / 100.0
         dollars = min(cap, equity * size_pct)
         target_qty = max(0, math.floor(dollars / max(px, 1e-6)))
     delta = target_qty - current_pos
@@ -128,3 +184,85 @@ def run_live_once(engine_cfg: dict, price_map: dict[str, list[float]] | None = N
             engine_cfg=engine_cfg,
         )
     return result
+
+
+def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> AlpacaClient:
+    api_key = os.environ.get("ALPACA_API_KEY_ID")
+    api_secret = os.environ.get("ALPACA_API_SECRET_KEY")
+    if not api_key or not api_secret:
+        raise RuntimeError("Missing Alpaca API credentials in environment")
+    trading_url, data_url = _select_alpaca_urls(
+        paper=paper,
+        trading_env=base_url or os.environ.get("ALPACA_BASE_URL"),
+        data_env=os.environ.get("ALPACA_DATA_BASE_URL"),
+    )
+    try:
+        from alpaca.common.exceptions import APIError  # type: ignore
+        from alpaca.data.historical import StockHistoricalDataClient  # type: ignore
+        from alpaca.data.requests import StockLatestTradeRequest  # type: ignore
+        from alpaca.trading.client import TradingClient  # type: ignore
+        from alpaca.trading.enums import OrderSide, TimeInForce  # type: ignore
+        from alpaca.trading.requests import MarketOrderRequest  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("alpaca extra not installed. Install with `pip install -e '.[alpaca]'`") from exc
+
+    class _RuntimeAlpacaClient:
+        def __init__(self) -> None:
+            self._trading = TradingClient(api_key, api_secret, paper=paper, base_url=trading_url)
+            self._data = StockHistoricalDataClient(api_key, api_secret, base_url=data_url)
+
+        def get_last_price(self, symbol: str) -> float:
+            req = StockLatestTradeRequest(symbol_or_symbols=symbol)
+            latest = self._data.get_stock_latest_trade(req)
+            trade = latest[symbol] if isinstance(latest, dict) else latest
+            return float(trade.price)
+
+        def is_market_open(self) -> bool:
+            clock = self._trading.get_clock()
+            return bool(getattr(clock, "is_open", False))
+
+        def get_account(self) -> dict:
+            account = self._trading.get_account()
+            if hasattr(account, "model_dump") and callable(account.model_dump):
+                data = account.model_dump()
+            elif hasattr(account, "dict") and callable(account.dict):
+                data = account.dict()
+            else:
+                data = {
+                    "cash": float(getattr(account, "cash", 0.0)),
+                    "equity": float(getattr(account, "equity", 0.0)),
+                    "last_equity": float(getattr(account, "last_equity", getattr(account, "equity", 0.0))),
+                }
+            return data
+
+        def get_position(self, symbol: str) -> float:
+            try:
+                pos = self._trading.get_open_position(symbol)
+            except APIError:
+                return 0.0
+            except Exception:
+                return 0.0
+            qty = getattr(pos, "qty", getattr(pos, "quantity", 0.0))
+            try:
+                return float(qty)
+            except (TypeError, ValueError):
+                return float(getattr(pos, "qty_available", 0.0))
+
+        def submit_order(self, symbol: str, side: str, qty: float, type: str) -> dict:
+            if type.lower() != "market":
+                raise ValueError("Only market orders are supported in AlpacaBroker")
+            order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+            request = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=order_side,
+                time_in_force=TimeInForce.DAY,
+            )
+            order = self._trading.submit_order(order_data=request)
+            if hasattr(order, "model_dump") and callable(order.model_dump):
+                return order.model_dump()
+            if hasattr(order, "dict") and callable(order.dict):
+                return order.dict()
+            return {"symbol": symbol, "side": side, "qty": qty, "type": type}
+
+    return _RuntimeAlpacaClient()

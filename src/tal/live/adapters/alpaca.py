@@ -1,32 +1,117 @@
-"""Optional Alpaca adapter skeletons."""
-
 from __future__ import annotations
 
-try:
-    from alpaca.trading.client import TradingClient  # type: ignore
-    from alpaca.data.historical import StockHistoricalDataClient  # type: ignore
-except Exception:  # pragma: no cover - missing extra or runtime not configured
-    TradingClient = None
-    StockHistoricalDataClient = None
+from typing import Protocol
 
-# Placeholder classes that would mirror Broker/MarketData in a future PR.
-# Do not instantiate in tests; raise a clear error if used without the extra.
+from ..base import Broker, Fill, Order
 
 
-def _require_alpaca() -> None:
-    if TradingClient is None or StockHistoricalDataClient is None:
-        raise RuntimeError(
-            "alpaca extra not installed. Install with `pip install -e '.[alpaca]'`"
-        )
+class AlpacaClient(Protocol):
+    """Protocol describing the minimal surface used by :class:`AlpacaBroker`."""
+
+    def get_last_price(self, symbol: str) -> float: ...
+
+    def is_market_open(self) -> bool: ...
+
+    def get_account(self) -> dict: ...  # {"cash": float, "equity": float, ...}
+
+    def get_position(self, symbol: str) -> float: ...
+
+    def submit_order(self, symbol: str, side: str, qty: float, type: str) -> dict: ...
 
 
-class AlpacaBroker:  # pragma: no cover - placeholder
-    def __init__(self, *args, **kwargs):
-        _require_alpaca()
-        raise NotImplementedError("AlpacaBroker will be implemented in a future update")
+class AlpacaBroker(Broker):
+    """Broker implementation backed by an :class:`AlpacaClient` instance."""
 
+    def __init__(
+        self,
+        client: AlpacaClient,
+        slippage_bps: float = 0.0,
+        max_order_usd: float | None = None,
+        max_position_pct: float | None = None,
+        max_daily_loss_pct: float | None = None,
+    ) -> None:
+        self.client = client
+        self.slippage_bps = float(slippage_bps)
+        self.max_order_usd = max_order_usd
+        self.max_position_pct = max_position_pct
+        self.max_daily_loss_pct = max_daily_loss_pct
+        self._known_symbols: set[str] = set()
 
-class AlpacaMarketData:  # pragma: no cover - placeholder
-    def __init__(self, *args, **kwargs):
-        _require_alpaca()
-        raise NotImplementedError("AlpacaMarketData will be implemented in a future update")
+    # Broker interface -------------------------------------------------
+    def cash(self) -> float:
+        account = self.client.get_account()
+        cash = account.get("cash", 0.0)
+        return float(cash)
+
+    def position(self, symbol: str) -> float:
+        qty = self.client.get_position(symbol)
+        self._known_symbols.add(symbol)
+        return float(qty)
+
+    def submit(self, order: Order) -> Fill:
+        if order.qty <= 0:
+            raise ValueError("Order quantity must be positive")
+        symbol = order.symbol
+        side = order.side.lower()
+        qty = float(order.qty)
+        px = float(order.ref_price) if order.ref_price is not None else self.price(symbol)
+        self._guardrails(symbol, side, qty, px)
+        slip = px * (self.slippage_bps / 1e4)
+        exec_px = px + slip if side == "buy" else px - slip
+        self.client.submit_order(symbol=symbol, side=side, qty=qty, type=order.type)
+        self._known_symbols.add(symbol)
+        return Fill(symbol, side, qty, exec_px)
+
+    def cancel_all(self) -> None:
+        # The simple paper adapter does not expose cancelation.
+        return None
+
+    # Adapter specific API ---------------------------------------------
+    def price(self, symbol: str) -> float:
+        px = self.client.get_last_price(symbol)
+        self._known_symbols.add(symbol)
+        return float(px)
+
+    def positions(self) -> dict[str, float]:
+        return {symbol: float(self.client.get_position(symbol)) for symbol in sorted(self._known_symbols)}
+
+    def cash_available(self) -> float:
+        return self.cash()
+
+    def is_market_open(self) -> bool:
+        return bool(self.client.is_market_open())
+
+    # Helpers ----------------------------------------------------------
+    def _guardrails(self, symbol: str, side: str, qty: float, px: float) -> None:
+        if not self.is_market_open():
+            raise ValueError("Market is closed")
+        notional = qty * px
+        if self.max_order_usd is not None and notional > self.max_order_usd:
+            raise ValueError(
+                f"Order value ${notional:0.2f} exceeds max_order_usd ${self.max_order_usd:0.2f}"
+            )
+        account = self.client.get_account()
+        equity_val = float(account.get("equity", 0.0) or 0.0)
+        if (
+            self.max_position_pct is not None
+            and equity_val > 0
+            and side.lower() == "buy"
+        ):
+            current_qty = float(self.client.get_position(symbol) or 0.0)
+            target_qty = current_qty + qty
+            limit = equity_val * (self.max_position_pct / 100.0)
+            position_value = abs(target_qty) * px
+            if position_value > limit:
+                raise ValueError(
+                    f"Position value ${position_value:0.2f} exceeds max_position_pct {self.max_position_pct}%"
+                )
+        if self.max_daily_loss_pct is not None:
+            last_equity = account.get("last_equity")
+            if last_equity:
+                last_equity = float(last_equity)
+                if last_equity > 0:
+                    equity_loss_pct = max(0.0, (last_equity - equity_val) / last_equity * 100.0)
+                    if equity_loss_pct > self.max_daily_loss_pct:
+                        raise ValueError(
+                            f"Daily loss {equity_loss_pct:.2f}% exceeds max_daily_loss_pct {self.max_daily_loss_pct}%"
+                        )
