@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from tal.evaluation.leaderboard import build_leaderboard, format_json, format_table
+from tal.evaluation.leaderboard import (
+    build_leaderboard,
+    format_json,
+    format_table,
+    summarize,
+)
 from tal.storage.db import get_engine, record_run
 
 
@@ -45,3 +50,11 @@ def test_leaderboard_single_run(tmp_path):
 
     json_output = format_json(leaderboard)
     assert "profit_factor" in json_output
+
+    summary_rows = summarize(engine, since_days=1)
+    assert summary_rows and summary_rows[0]["agent_id"] == "agent-1"
+
+    builder_rows = summarize(engine, since_days=1, group="builder")
+    assert builder_rows and builder_rows[0]["runs"] == 1
+    builder_table = format_table(builder_rows, group="builder")
+    assert "builder" in builder_table.lower()

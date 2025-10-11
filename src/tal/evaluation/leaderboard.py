@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import json
 import numbers
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
-from tal.storage.db import fetch_metrics_for_runs, fetch_runs_since
+from tal.storage.db import fetch_agents, fetch_metrics_for_runs, fetch_runs_since
 
 WINDOW_MAP = {
     "1d": timedelta(days=1),
@@ -73,48 +75,157 @@ def build_leaderboard(engine, since_iso: str) -> pd.DataFrame:
     return leaderboard
 
 
-def format_table(df: pd.DataFrame) -> str:
-    """Format the leaderboard DataFrame as a plain text table."""
+def _ensure_engine(db) -> Any:
+    return getattr(db, "sa", db)
 
-    if df.empty:
+
+def by_agent(db, since_days: int = 30) -> list[dict[str, Any]]:
+    engine = _ensure_engine(db)
+    since_dt = datetime.now(timezone.utc) - timedelta(days=since_days)
+    df = build_leaderboard(engine, since_dt.isoformat())
+    records = df.to_dict(orient="records")
+    agents_meta = {row["agent_id"]: row for row in fetch_agents(engine)}
+    for row in records:
+        meta = agents_meta.get(row["agent_id"])
+        if meta:
+            row.update({
+                "builder_name": meta.get("builder_name"),
+                "builder_model": meta.get("builder_model"),
+                "prompt_hash": meta.get("prompt_hash"),
+                "parent_id": meta.get("parent_id"),
+                "version": meta.get("version"),
+                "mutation": meta.get("mutation"),
+                "notes": meta.get("notes"),
+            })
+    return records
+
+
+def _safe_add_metric(container: dict[str, list[float]], key: str, value: Any) -> None:
+    if pd.isna(value):
+        return
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return
+    container.setdefault(key, []).append(numeric)
+
+
+def by_builder(db, since_days: int = 30) -> list[dict[str, Any]]:
+    rows = by_agent(db, since_days=since_days)
+    if not rows:
+        return []
+    groups: dict[str, dict[str, Any]] = {}
+    metrics: dict[str, dict[str, list[float]]] = defaultdict(dict)
+    for row in rows:
+        builder = row.get("builder_name") or "unknown"
+        grp = groups.setdefault(
+            builder,
+            {
+                "builder_name": builder,
+                "builder_model": row.get("builder_model"),
+                "agent_ids": [],
+                "runs": 0,
+            },
+        )
+        if grp.get("builder_model") is None and row.get("builder_model"):
+            grp["builder_model"] = row.get("builder_model")
+        grp["agent_ids"].append(row.get("agent_id"))
+        grp["runs"] += int(row.get("runs", 0))
+        metric_container = metrics.setdefault(builder, {})
+        for metric in ("profit_factor", "sharpe", "max_dd", "win_rate"):
+            _safe_add_metric(metric_container, metric, row.get(metric))
+    results: list[dict[str, Any]] = []
+    for builder, info in groups.items():
+        metric_container = metrics.get(builder, {})
+        for metric, values in metric_container.items():
+            if values:
+                info[metric] = sum(values) / len(values)
+        for metric in ("profit_factor", "sharpe", "max_dd", "win_rate"):
+            info.setdefault(metric, None)
+        results.append(info)
+    results.sort(
+        key=lambda r: (
+            r.get("profit_factor") if r.get("profit_factor") is not None else float("-inf"),
+            r.get("sharpe") if r.get("sharpe") is not None else float("-inf"),
+        ),
+        reverse=True,
+    )
+    return results
+
+
+def summarize(db, since_days: int = 30, group: str = "agent") -> list[dict[str, Any]]:
+    group_key = (group or "agent").lower()
+    if group_key == "builder":
+        return by_builder(db, since_days=since_days)
+    return by_agent(db, since_days=since_days)
+
+
+def print_table(rows: Sequence[Mapping[str, Any]], group: str = "agent") -> str:
+    if not rows:
         return "No runs found in the selected window."
+    group_key = (group or "agent").lower()
+    if group_key == "builder":
+        columns = [
+            "builder_name",
+            "builder_model",
+            "runs",
+            "profit_factor",
+            "sharpe",
+            "max_dd",
+            "win_rate",
+        ]
+    else:
+        columns = [
+            "agent_id",
+            "builder_name",
+            "runs",
+            "profit_factor",
+            "sharpe",
+            "max_dd",
+            "win_rate",
+        ]
 
-    display = df.copy()
-
-    def fmt(value):
+    def fmt(value: Any) -> str:
         if pd.isna(value):
             return "-"
         if isinstance(value, numbers.Integral):
-            return str(value)
+            return str(int(value))
         if isinstance(value, numbers.Real):
             return f"{value:.4f}"
+        if value is None:
+            return "-"
         return str(value)
 
-    columns = ["agent_id", "runs", "profit_factor", "sharpe", "max_dd", "win_rate"]
-    rows: list[list[str]] = []
-    for _, row in display.iterrows():
-        formatted = [
-            str(row["agent_id"]),
-            str(int(row["runs"])),
-            fmt(row.get("profit_factor")),
-            fmt(row.get("sharpe")),
-            fmt(row.get("max_dd")),
-            fmt(row.get("win_rate")),
-        ]
-        rows.append(formatted)
+    table_rows: list[list[str]] = []
+    for row in rows:
+        table_rows.append([fmt(row.get(col)) for col in columns])
 
-    all_rows: list[list[str]] = [columns] + rows
-    widths = [max(len(str(r[i])) for r in all_rows) for i in range(len(columns))]
-    header = " | ".join(str(columns[i]).ljust(widths[i]) for i in range(len(columns)))
-    separator = "-+-".join("-" * widths[i] for i in range(len(columns)))
-    body_lines = [
-        " | ".join(row[i].ljust(widths[i]) for i in range(len(columns))) for row in rows
-    ]
-    return "\n".join([header, separator, *body_lines])
+    widths = [max(len(col), *(len(r[idx]) for r in table_rows)) for idx, col in enumerate(columns)]
+    header = " | ".join(col.ljust(widths[idx]) for idx, col in enumerate(columns))
+    separator = "-+-".join("-" * widths[idx] for idx in range(len(columns)))
+    body = [" | ".join(r[idx].ljust(widths[idx]) for idx in range(len(columns))) for r in table_rows]
+    return "\n".join([header, separator, *body])
 
 
-def format_json(df: pd.DataFrame) -> str:
+def format_table(data: Sequence[Mapping[str, Any]] | pd.DataFrame, group: str = "agent") -> str:
+    """Format leaderboard rows as a plain text table."""
+
+    if isinstance(data, pd.DataFrame):
+        if data.empty:
+            return "No runs found in the selected window."
+        records = data.to_dict(orient="records")
+    else:
+        records = list(data)
+        if not records:
+            return "No runs found in the selected window."
+    return print_table(records, group=group)
+
+
+def format_json(data: Sequence[Mapping[str, Any]] | pd.DataFrame) -> str:
     """Format the leaderboard as JSON."""
 
-    records = df.to_dict(orient="records")
+    if isinstance(data, pd.DataFrame):
+        records = data.to_dict(orient="records")
+    else:
+        records = list(data)
     return json.dumps(records, indent=2)

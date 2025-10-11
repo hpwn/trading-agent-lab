@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 import importlib
 import math
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -10,6 +12,7 @@ from pydantic import BaseModel
 
 from .adapters.sim import SimBroker, SimMarketData
 from .base import Order
+from tal.storage.db import get_engine, record_run
 
 
 class LiveCfg(BaseModel):
@@ -32,6 +35,7 @@ def _load_strategy(strategy_name: str):
 def run_live_once(engine_cfg: dict, price_map: dict[str, list[float]] | None = None) -> dict[str, Any]:
     """Execute a single deterministic live trading step."""
 
+    ts_start = datetime.now(timezone.utc)
     live_cfg = LiveCfg(**engine_cfg.get("live", {}))
     universe = engine_cfg.get("universe", {})
     if isinstance(universe, dict):
@@ -86,7 +90,8 @@ def run_live_once(engine_cfg: dict, price_map: dict[str, list[float]] | None = N
     elif delta < 0:
         fill = br.submit(Order(sym, "sell", qty=float(-delta), ref_price=px))
 
-    return {
+    ts_end = datetime.now(timezone.utc)
+    result = {
         "symbol": sym,
         "signal": last_sig,
         "target_qty": float(target_qty),
@@ -95,3 +100,31 @@ def run_live_once(engine_cfg: dict, price_map: dict[str, list[float]] | None = N
         "cash_after": br.cash(),
         "fill": fill.__dict__ if fill else None,
     }
+    storage_cfg = engine_cfg.get("storage", {})
+    db_url = storage_cfg.get("db_url")
+    if db_url:
+        agent_cfg = engine_cfg.get("agent") or {}
+        agent_id = (
+            agent_cfg.get("id")
+            or engine_cfg.get("agent_id")
+            or engine_cfg.get("agent", {}).get("id")
+            or "unknown"
+        )
+        mode = engine_cfg.get("mode", "live")
+        run_id = engine_cfg.get("run_id") or str(uuid.uuid4())
+        engine = get_engine(db_url)
+        record_run(
+            engine,
+            {
+                "id": run_id,
+                "agent_id": agent_id,
+                "mode": mode,
+                "ts_start": ts_start.isoformat(),
+                "ts_end": ts_end.isoformat(),
+                "commit_sha": engine_cfg.get("commit_sha"),
+                "config_hash": engine_cfg.get("config_hash"),
+            },
+            [],
+            engine_cfg=engine_cfg,
+        )
+    return result

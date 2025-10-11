@@ -79,6 +79,13 @@ def load_config(config_path: str):
     return cfg, expanded
 
 
+def _load_config(config_path: str) -> dict:
+    """Load a config file and return the parsed dictionary only."""
+
+    cfg, _ = load_config(config_path)
+    return cfg
+
+
 def _current_commit_sha() -> str | None:
     try:
         result = subprocess.run(
@@ -136,6 +143,7 @@ def run_backtest(config_path: str):
             {"run_id": run_id, "name": name, "value": safe_metrics[name]}
             for name in kpis
         ],
+        engine_cfg=cfg,
     )
 
     run_artifacts = artifacts_dir / "runs" / run_id

@@ -39,9 +39,14 @@ def load_agent_config(path: str) -> AgentSpec:
 
 
 def to_engine_config(spec: AgentSpec) -> dict:
+    metadata = spec.metadata.model_dump() if spec.metadata else {}
     return {
         "env": "dev",
         "agent_id": spec.id,
+        "agent": {
+            "id": spec.id,
+            "metadata": metadata,
+        },
         "universe": {"symbols": spec.universe},
         "data": {
             "timeframe": spec.data.timeframe,
