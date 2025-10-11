@@ -24,7 +24,10 @@ DEFAULT_ENV = {
 
 
 def _load_env(env_file: str | None = None) -> None:
-    env_path = Path(env_file or os.environ.get("TAL_ENV_FILE", ".env"))
+    env_candidate = env_file if env_file is not None else os.environ.get("TAL_ENV_FILE")
+    if env_candidate is None:
+        env_candidate = ".env"
+    env_path = Path(env_candidate)
     if env_path.exists():
         for line in env_path.read_text().splitlines():
             line = line.strip()
@@ -63,7 +66,7 @@ DEFAULT_CONFIG_PATH = Path("config/base.yaml")
 
 
 def load_config(config_path: str):
-    import yaml
+    import yaml  # type: ignore[import-untyped]
 
     _load_env()
     requested_path = Path(config_path)

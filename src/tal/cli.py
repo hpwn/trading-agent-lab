@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 
 import typer
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from tal.agents.registry import load_agent_config, to_engine_config
 from tal.backtest.engine import _load_config

@@ -4,7 +4,7 @@ import datetime as dt
 import os
 from pathlib import Path
 import zoneinfo
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 
@@ -20,7 +20,10 @@ DEFAULT_ENV = {
 def _load_env(env_file: str | None = None) -> None:
     """Load environment variables from a .env-style file with defaults."""
 
-    env_path = Path(env_file or os.environ.get("TAL_ENV_FILE", ".env"))
+    env_candidate = env_file if env_file is not None else os.environ.get("TAL_ENV_FILE")
+    if env_candidate is None:
+        env_candidate = ".env"
+    env_path = Path(env_candidate)
     if env_path.exists():
         for line in env_path.read_text().splitlines():
             line = line.strip()

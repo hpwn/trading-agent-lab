@@ -4,7 +4,7 @@ import os
 import re
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from .spec import AgentSpec
 

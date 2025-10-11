@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from glob import glob
 from pathlib import Path
+from typing import Any
+
 from pydantic import BaseModel
 
 from tal.agents.registry import load_agent_config, to_engine_config
@@ -22,9 +24,11 @@ def list_agent_files(agents_dir: str) -> list[str]:
     return sorted(glob(str(Path(agents_dir) / "*.yaml")))
 
 
-def _ensure_storage(cfg: dict, db_url: str) -> None:
+def _force_db_url(cfg: dict[str, Any], db_url: str | None) -> None:
+    if not db_url:
+        return
     storage = cfg.setdefault("storage", {})
-    storage.setdefault("db_url", db_url)
+    storage["db_url"] = db_url
 
 
 def live_step_all(engine_db_url: str, agents_dir: str, artifacts_dir: str) -> list[dict]:
@@ -36,7 +40,7 @@ def live_step_all(engine_db_url: str, agents_dir: str, artifacts_dir: str) -> li
     for file_path in list_agent_files(agents_dir):
         spec = load_agent_config(file_path)
         cfg = to_engine_config(spec)
-        _ensure_storage(cfg, engine_db_url)
+        _force_db_url(cfg, engine_db_url)
         agent_info = cfg.get("agent", {})
         agent_id = agent_info.get("id") or cfg.get("agent_id", "unnamed")
         live_cfg = cfg.setdefault("live", {})

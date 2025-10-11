@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence, cast
 
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine as SAEngine
@@ -99,19 +99,26 @@ def init_db(engine: SAEngine) -> None:
             conn.execute(text(statement))
 
 
-def upsert_agent(engine: SAEngine, agent: Mapping[str, object]) -> None:
-    row = {
-        "agent_id": agent.get("agent_id"),
-        "builder_name": agent.get("builder_name"),
-        "builder_model": agent.get("builder_model"),
-        "prompt_hash": agent.get("prompt_hash"),
-        "parent_id": agent.get("parent_id"),
-        "version": agent.get("version"),
-        "mutation": agent.get("mutation"),
-        "notes": agent.get("notes"),
-    }
-    if not row["agent_id"]:
+def upsert_agent(engine: SAEngine, agent: Mapping[str, Any]) -> None:
+    agent_id = str(agent.get("id") or agent.get("agent_id") or "")
+    meta_obj = agent.get("metadata")
+    meta: Mapping[str, Any] = cast(Mapping[str, Any], meta_obj) if isinstance(meta_obj, Mapping) else {}
+    builder_obj = meta.get("builder") if meta else None
+    builder: Mapping[str, Any] = cast(Mapping[str, Any], builder_obj) if isinstance(builder_obj, Mapping) else {}
+    lineage_obj = meta.get("lineage") if meta else None
+    lineage: Mapping[str, Any] = cast(Mapping[str, Any], lineage_obj) if isinstance(lineage_obj, Mapping) else {}
+    if not agent_id:
         return
+    row = {
+        "agent_id": agent_id,
+        "builder_name": builder.get("name") or agent.get("builder_name"),
+        "builder_model": builder.get("model") or agent.get("builder_model"),
+        "prompt_hash": builder.get("prompt_hash") or agent.get("prompt_hash"),
+        "parent_id": lineage.get("parent_id") or agent.get("parent_id"),
+        "version": lineage.get("version") or agent.get("version"),
+        "mutation": lineage.get("mutation") or agent.get("mutation"),
+        "notes": lineage.get("notes") or agent.get("notes"),
+    }
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -145,32 +152,24 @@ def fetch_agents(engine: SAEngine) -> list[dict[str, object]]:
 
 def record_run(
     engine: SAEngine,
-    run_row: Mapping[str, object],
-    metrics_rows: Sequence[Mapping[str, object]],
-    trades_rows: Iterable[Mapping[str, object]] | None = None,
-    engine_cfg: Mapping[str, object] | None = None,
+    run_row: Mapping[str, Any],
+    metrics_rows: Sequence[Mapping[str, Any]],
+    trades_rows: Optional[Iterable[Mapping[str, Any]]] = None,
+    engine_cfg: Optional[Mapping[str, Any]] = None,
 ) -> None:
     """Persist a run along with associated metrics and (future) trades."""
 
     trades_rows = list(trades_rows or [])
-    agent_payload: dict[str, object] | None = None
-    if engine_cfg and isinstance(engine_cfg.get("agent"), Mapping):
-        agent_cfg = engine_cfg["agent"]
-        agent_id = agent_cfg.get("id") or run_row.get("agent_id")
-        metadata = agent_cfg.get("metadata") or {}
-        builder = metadata.get("builder") or {}
-        lineage = metadata.get("lineage") or {}
-        agent_payload = {
-            "agent_id": agent_id,
-            "builder_name": builder.get("name"),
-            "builder_model": builder.get("model"),
-            "prompt_hash": builder.get("prompt_hash"),
-            "parent_id": lineage.get("parent_id"),
-            "version": lineage.get("version"),
-            "mutation": lineage.get("mutation"),
-            "notes": lineage.get("notes"),
-        }
-        upsert_agent(engine, agent_payload)
+    agent_info: Mapping[str, Any] | None = None
+    if engine_cfg:
+        agent_obj = engine_cfg.get("agent")  # type: Any
+        if isinstance(agent_obj, Mapping):
+            agent_data = dict(agent_obj)
+            if not agent_data.get("id") and run_row.get("agent_id"):
+                agent_data["id"] = run_row.get("agent_id")
+            agent_info = agent_data
+    if agent_info:
+        upsert_agent(engine, agent_info)
     with engine.begin() as conn:
         conn.execute(
             text(
