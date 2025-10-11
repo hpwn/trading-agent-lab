@@ -6,7 +6,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Tuple
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -47,6 +47,19 @@ def _load_strategy(strategy_name: str):
         mod = importlib.import_module("tal.strategies.rsi_mean_rev")
         return mod.RSIMeanReversion
     raise ValueError(f"Unknown strategy: {strategy_name}")
+
+
+def _select_alpaca_urls(
+    *, paper: bool, trading_env: str | None, data_env: str | None
+) -> Tuple[str, str]:
+    """Decide trading and data base URLs for Alpaca clients."""
+
+    trading_url = (
+        trading_env
+        or ("https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets")
+    )
+    data_url = data_env or "https://data.alpaca.markets"
+    return trading_url, data_url
 
 
 def run_live_once(
@@ -178,9 +191,11 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
     api_secret = os.environ.get("ALPACA_API_SECRET_KEY")
     if not api_key or not api_secret:
         raise RuntimeError("Missing Alpaca API credentials in environment")
-    url = base_url or os.environ.get("ALPACA_BASE_URL")
-    if not url:
-        url = "https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets"
+    trading_url, data_url = _select_alpaca_urls(
+        paper=paper,
+        trading_env=base_url or os.environ.get("ALPACA_BASE_URL"),
+        data_env=os.environ.get("ALPACA_DATA_BASE_URL"),
+    )
     try:
         from alpaca.common.exceptions import APIError  # type: ignore
         from alpaca.data.historical import StockHistoricalDataClient  # type: ignore
@@ -193,8 +208,8 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
 
     class _RuntimeAlpacaClient:
         def __init__(self) -> None:
-            self._trading = TradingClient(api_key, api_secret, paper=paper, base_url=url)
-            self._data = StockHistoricalDataClient(api_key, api_secret, base_url=url)
+            self._trading = TradingClient(api_key, api_secret, paper=paper, base_url=trading_url)
+            self._data = StockHistoricalDataClient(api_key, api_secret, base_url=data_url)
 
         def get_last_price(self, symbol: str) -> float:
             req = StockLatestTradeRequest(symbol_or_symbols=symbol)

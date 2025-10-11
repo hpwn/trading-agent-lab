@@ -75,6 +75,11 @@ ALPACA_API_SECRET_KEY=...
 ALPACA_BASE_URL=https://paper-api.alpaca.markets
 ```
 
+- `ALPACA_BASE_URL` controls the trading API host (defaults to Alpaca's paper or live
+  trading endpoints based on `live.paper`).
+- `ALPACA_DATA_BASE_URL` controls the market data host (defaults to
+  `https://data.alpaca.markets`).
+
 Point the live CLI to the bundled paper config to try the integration:
 
 ```bash
