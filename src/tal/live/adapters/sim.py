@@ -72,7 +72,7 @@ class SimBroker(Broker):
     def submit(self, order: Order) -> Fill:
         import time
 
-        px = self._price(order.symbol)
+        px = float(order.ref_price) if order.ref_price is not None else self._price(order.symbol)
         slip = px * (self.slippage_bps / 1e4)
         exec_px = px + slip if order.side == "buy" else px - slip
         if order.side == "buy":

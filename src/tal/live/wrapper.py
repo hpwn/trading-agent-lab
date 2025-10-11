@@ -82,9 +82,9 @@ def run_live_once(engine_cfg: dict, price_map: dict[str, list[float]] | None = N
     delta = target_qty - current_pos
     fill = None
     if delta > 0:
-        fill = br.submit(Order(sym, "buy", qty=float(delta)))
+        fill = br.submit(Order(sym, "buy", qty=float(delta), ref_price=px))
     elif delta < 0:
-        fill = br.submit(Order(sym, "sell", qty=float(-delta)))
+        fill = br.submit(Order(sym, "sell", qty=float(-delta), ref_price=px))
 
     return {
         "symbol": sym,
