@@ -53,6 +53,20 @@ INIT_STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS orders (
+        id TEXT PRIMARY KEY,
+        ts TEXT NOT NULL,
+        agent_id TEXT,
+        symbol TEXT,
+        side TEXT,
+        qty REAL,
+        price REAL,
+        broker TEXT,
+        broker_order_id TEXT,
+        status TEXT
+    )
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_runs_agent_ts ON runs(agent_id, ts_start)
     """,
     """
@@ -203,6 +217,50 @@ def record_run(
                 ),
                 trades_rows,
             )
+
+
+def record_order(engine: SAEngine, order: Mapping[str, Any]) -> None:
+    """Persist a single live order fill or status update."""
+
+    order_id = order.get("id")
+    ts = order.get("ts")
+    if not order_id or not ts:
+        raise ValueError("Order record requires 'id' and 'ts' keys")
+
+    def _maybe_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    row = {
+        "id": str(order_id),
+        "ts": str(ts),
+        "agent_id": order.get("agent_id"),
+        "symbol": order.get("symbol"),
+        "side": order.get("side"),
+        "qty": _maybe_float(order.get("qty")),
+        "price": _maybe_float(order.get("price")),
+        "broker": order.get("broker"),
+        "broker_order_id": order.get("broker_order_id"),
+        "status": order.get("status"),
+    }
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT OR REPLACE INTO orders (
+                    id, ts, agent_id, symbol, side, qty, price, broker, broker_order_id, status
+                ) VALUES (
+                    :id, :ts, :agent_id, :symbol, :side, :qty, :price, :broker, :broker_order_id, :status
+                )
+                """
+            ),
+            row,
+        )
 
 
 def fetch_runs_since(engine: SAEngine, since_iso: str) -> list[dict[str, object]]:

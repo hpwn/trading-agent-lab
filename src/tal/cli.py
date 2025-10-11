@@ -1,21 +1,90 @@
 import json
+import os
 from pathlib import Path
 import tempfile
+from typing import Any
 
 import typer
 import yaml  # type: ignore[import-untyped]
 
 from tal.agents.registry import load_agent_config, to_engine_config
 from tal.backtest.engine import _load_config
-from tal.live.wrapper import run_live_once
+from tal.live.wrapper import run_live_once, _build_alpaca_client_from_env
 from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 from tal.orchestrator.day_night import run_loop
 
 app = typer.Typer(help="Trading Agent Lab (CLI only)")
 agent_app = typer.Typer(help="Agent-specific commands")
 league_app = typer.Typer(help="League manager: multi-agent live & nightly eval")
+doctor_app = typer.Typer(help="Runtime diagnostics")
 app.add_typer(agent_app, name="agent")
 app.add_typer(league_app, name="league")
+app.add_typer(doctor_app, name="doctor")
+
+
+def _fmt_float(value: Any) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+@doctor_app.command("alpaca")
+def doctor_alpaca(
+    symbol: str = typer.Option(
+        "SPY",
+        "--symbol",
+        help="Ticker symbol to fetch the latest price for.",
+        show_default=True,
+    ),
+    paper: bool = typer.Option(
+        True,
+        "--paper/--live",
+        help="Target the paper (default) or live trading environment.",
+        show_default=True,
+    ),
+    base_url: str | None = typer.Option(
+        None,
+        "--base-url",
+        help="Override the Alpaca trading API base URL.",
+    ),
+):
+    """Validate Alpaca credentials and basic account connectivity."""
+
+    required = ["ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY"]
+    missing = [key for key in required if not os.environ.get(key)]
+    if missing:
+        for key in missing:
+            typer.echo(f"[doctor] missing environment variable: {key}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        client = _build_alpaca_client_from_env(paper=paper, base_url=base_url)
+    except Exception as exc:  # pragma: no cover - exercised via tests with stubs
+        typer.echo(f"[doctor] failed to initialize Alpaca client: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    try:
+        market_open = bool(client.is_market_open())
+        account = client.get_account() or {}
+        cash = _fmt_float(account.get("cash", 0.0))
+        equity = _fmt_float(account.get("equity", account.get("portfolio_value", 0.0)))
+        buying_power_val = (
+            account.get("buying_power")
+            or account.get("cash_available")
+            or account.get("cash")
+            or account.get("equity")
+        )
+        buying_power = _fmt_float(buying_power_val) if buying_power_val is not None else "n/a"
+        price = _fmt_float(client.get_last_price(symbol))
+    except Exception as exc:  # pragma: no cover - depends on runtime client
+        typer.echo(f"[doctor] runtime check failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    symbol_upper = symbol.upper()
+    typer.echo(f"market_open: {market_open}")
+    typer.echo(f"account: cash={cash} equity={equity} buying_power={buying_power}")
+    typer.echo(f"latest_price[{symbol_upper}]: {price}")
 
 
 @agent_app.command("backtest")

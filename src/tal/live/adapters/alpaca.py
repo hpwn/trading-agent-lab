@@ -58,9 +58,17 @@ class AlpacaBroker(Broker):
         self._guardrails(symbol, side, qty, px)
         slip = px * (self.slippage_bps / 1e4)
         exec_px = px + slip if side == "buy" else px - slip
-        self.client.submit_order(symbol=symbol, side=side, qty=qty, type=order.type)
+        raw_order = self.client.submit_order(symbol=symbol, side=side, qty=qty, type=order.type)
         self._known_symbols.add(symbol)
-        return Fill(symbol, side, qty, exec_px)
+        broker_order_id = None
+        status = "submitted"
+        if isinstance(raw_order, dict):
+            broker_order_id = raw_order.get("id") or raw_order.get("order_id")
+            status = raw_order.get("status", status)
+        fill = Fill(symbol, side, qty, exec_px)
+        fill.status = status
+        fill.broker_order_id = broker_order_id
+        return fill
 
     def cancel_all(self) -> None:
         # The simple paper adapter does not expose cancelation.

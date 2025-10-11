@@ -21,6 +21,8 @@ class Fill:
     side: str
     qty: float
     price: float
+    status: str | None = None
+    broker_order_id: str | None = None
 
 
 class Broker(ABC):

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import time
 from pathlib import Path
+from typing import Any
 import zoneinfo
 import yaml  # type: ignore[import-untyped]
 
@@ -44,13 +46,24 @@ def _load_cfg(path: str):
     return yaml.safe_load(raw)
 
 
-def market_open_now(cfg) -> bool:
-    tz = zoneinfo.ZoneInfo(cfg["orchestrator"]["market_hours"]["timezone"])
-    now = dt.datetime.now(tz)
+def market_open_now(cfg, now: dt.datetime | None = None) -> bool:
     hours = cfg["orchestrator"]["market_hours"]
-    open_t = dt.datetime.combine(now.date(), dt.time.fromisoformat(hours["open"]), tz)
-    close_t = dt.datetime.combine(now.date(), dt.time.fromisoformat(hours["close"]), tz)
-    return open_t <= now <= close_t and now.weekday() <= 4
+    tz = zoneinfo.ZoneInfo(hours["timezone"])
+    ts = now or dt.datetime.now(tz)
+    open_t = dt.datetime.combine(ts.date(), dt.time.fromisoformat(hours["open"]), tz)
+    close_t = dt.datetime.combine(ts.date(), dt.time.fromisoformat(hours["close"]), tz)
+    return open_t <= ts < close_t and ts.weekday() <= 4
+
+
+def _summarize(result) -> str:
+    if isinstance(result, list):
+        return f"{len(result)} agents"
+    if isinstance(result, dict):
+        items = list(result.items())[:3]
+        if not items:
+            return "empty"
+        return ", ".join(f"{k}={v}" for k, v in items)
+    return str(result)
 
 
 def run_loop(config_path: str):
@@ -58,14 +71,42 @@ def run_loop(config_path: str):
     storage_cfg = cfg.get("storage", {})
     db_url = storage_cfg.get("db_url", "sqlite:///./lab.db")
     league_cfg = LeagueCfg(**cfg.get("league", {}))
-    if market_open_now(cfg):
-        print("[ORCH] Market hours detected; running league live step", flush=True)
-        return live_step_all(db_url, league_cfg.agents_dir, league_cfg.artifacts_dir)
-    print("[ORCH] Off hours detected; running nightly evaluation", flush=True)
-    return nightly_eval(
-        db_url,
-        league_cfg.artifacts_dir,
-        league_cfg.since_days,
-        league_cfg.top_k,
-        league_cfg.retire_k,
+    orch_cfg = cfg.get("orchestrator", {})
+    hours = orch_cfg.get("market_hours", {})
+    tz_name = hours.get("timezone", "America/New_York")
+    open_window = hours.get("open", "09:30")
+    close_window = hours.get("close", "16:00")
+    cycle_minutes = float(orch_cfg.get("cycle_minutes", 5))
+    cycle_seconds = max(1, int(cycle_minutes * 60))
+    print(
+        f"[ORCH] boot tz={tz_name} open={open_window} close={close_window} cycle={cycle_minutes}m",
+        flush=True,
     )
+    tz = zoneinfo.ZoneInfo(tz_name)
+    try:
+        while True:
+            now = dt.datetime.now(tz)
+            is_open = market_open_now(cfg, now=now)
+            mode = "live" if is_open else "nightly"
+            try:
+                result: Any
+                if is_open:
+                    result = live_step_all(db_url, league_cfg.agents_dir, league_cfg.artifacts_dir)
+                else:
+                    result = nightly_eval(
+                        db_url,
+                        league_cfg.artifacts_dir,
+                        league_cfg.since_days,
+                        league_cfg.top_k,
+                        league_cfg.retire_k,
+                    )
+                summary = _summarize(result)
+                print(
+                    f"[ORCH] cycle[{mode}] {now.isoformat()} {summary}",
+                    flush=True,
+                )
+            except Exception as exc:  # pragma: no cover - runtime guardrail
+                print(f"[ORCH] cycle[{mode}] error: {exc}", flush=True)
+            time.sleep(cycle_seconds)
+    except KeyboardInterrupt:  # pragma: no cover - manual shutdown
+        print("[ORCH] shutdown requested", flush=True)

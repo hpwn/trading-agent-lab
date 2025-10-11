@@ -44,7 +44,7 @@ lint = [
   "types-requests"
 ]
 alpaca = [
-  "alpaca-py>=0.13"
+  "alpaca-py>=0.21.0"
 ]
 
 [tool.pytest.ini_options]

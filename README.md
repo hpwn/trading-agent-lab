@@ -66,14 +66,20 @@ Tests and CI only exercise the simulator—no network calls are made.
 
 ### Alpaca (paper) quickstart
 
-The runtime adapter reads credentials from the environment. A `.env` file
-containing the following keys is sufficient for local testing:
+Install the optional runtime extra and export credentials before running any
+paper trades:
 
+```bash
+pip install -e ".[alpaca]"
+export ALPACA_API_KEY_ID=...
+export ALPACA_API_SECRET_KEY=...
+# optional overrides
+export ALPACA_BASE_URL=...
+export ALPACA_DATA_BASE_URL=...
 ```
-ALPACA_API_KEY_ID=...
-ALPACA_API_SECRET_KEY=...
-ALPACA_BASE_URL=https://paper-api.alpaca.markets
-```
+
+The runtime adapter reads credentials from the environment. A `.env` file with
+these keys is sufficient for local testing.
 
 - `ALPACA_BASE_URL` controls the trading API host (defaults to Alpaca's paper or live
   trading endpoints based on `live.paper`).
