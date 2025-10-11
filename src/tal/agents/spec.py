@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Dict, List, Optional
 
 
@@ -66,11 +66,29 @@ class StorageCfg(BaseModel):
 
 
 class LiveCfg(BaseModel):
-    broker: str = "sim"
+    model_config = ConfigDict(extra="allow")
+
+    adapter: str = "sim"
+    broker: Optional[str] = None
     cash: float = 10_000
     commission: float = 0.0
     slippage_bps: float = 1.0
     ledger_dir: str = "./artifacts/live"
+    bars: int = 200
+    max_position_pct: float = 50.0
+    max_order_usd: Optional[float] = None
+    max_daily_loss_pct: Optional[float] = None
+    paper: bool = True
+    base_url: Optional[str] = None
+    symbol: Optional[str] = None
+    size_pct: Optional[float] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_adapter(cls, values: Dict) -> Dict:
+        if isinstance(values, dict) and "adapter" not in values and "broker" in values:
+            values = {**values, "adapter": values["broker"]}
+        return values
 
 
 class AgentSpec(BaseModel):

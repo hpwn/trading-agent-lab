@@ -1,0 +1,11 @@
+live:
+  adapter: "alpaca"
+  paper: true
+  symbol: "SPY"
+  size_pct: 5
+  slippage_bps: 5
+  max_order_usd: 5
+  max_position_pct: 10
+  max_daily_loss_pct: 2
+storage:
+  db_url: "sqlite:///./lab.db"

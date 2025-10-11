@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from glob import glob
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel
 
 from tal.agents.registry import load_agent_config, to_engine_config
+from tal.live.adapters import AlpacaClient
 from tal.live.wrapper import run_live_once
 from tal.storage.db import Engine
 
@@ -31,7 +32,13 @@ def _force_db_url(cfg: dict[str, Any], db_url: str | None) -> None:
     storage["db_url"] = db_url
 
 
-def live_step_all(engine_db_url: str, agents_dir: str, artifacts_dir: str) -> list[dict]:
+def live_step_all(
+    engine_db_url: str,
+    agents_dir: str,
+    artifacts_dir: str,
+    *,
+    alpaca_client_factory: Callable[[dict[str, Any]], AlpacaClient | None] | None = None,
+) -> list[dict]:
     """Run one live step for each configured agent."""
 
     base_artifacts = Path(artifacts_dir)
@@ -45,7 +52,11 @@ def live_step_all(engine_db_url: str, agents_dir: str, artifacts_dir: str) -> li
         agent_id = agent_info.get("id") or cfg.get("agent_id", "unnamed")
         live_cfg = cfg.setdefault("live", {})
         live_cfg["ledger_dir"] = str(base_artifacts / "live" / agent_id)
-        res = run_live_once(cfg)
+        adapter_name = live_cfg.get("adapter") or live_cfg.get("broker", "sim")
+        injected_client = None
+        if adapter_name == "alpaca" and alpaca_client_factory is not None:
+            injected_client = alpaca_client_factory(cfg)
+        res = run_live_once(cfg, alpaca_client=injected_client)
         results.append({"agent_id": agent_id, **res})
     (base_artifacts / "last_live.json").write_text(json.dumps(results, indent=2))
     return results
