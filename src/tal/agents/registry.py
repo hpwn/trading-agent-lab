@@ -64,4 +64,5 @@ def to_engine_config(spec: AgentSpec) -> dict:
             "db_url": spec.storage.db_url,
             "artifacts_dir": spec.storage.artifacts_dir,
         },
+        "live": spec.live.model_dump(),
     }

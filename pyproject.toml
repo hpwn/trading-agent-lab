@@ -43,6 +43,9 @@ lint = [
   "types-PyYAML",
   "types-requests"
 ]
+alpaca = [
+  "alpaca-py>=0.13"
+]
 
 [tool.pytest.ini_options]
 addopts = "-q --cov=tal --cov-report=term-missing"
