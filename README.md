@@ -13,6 +13,37 @@ tal backtest --config config/base.yaml
 tal orchestrate --config config/base.yaml
 ```
 
+## Running multiple agents
+
+The CLI exposes agent-aware commands that load an `AgentSpec` and run the
+existing backtest/orchestrator tooling with the derived engine config.
+
+```bash
+tal agent backtest --config config/agents/codex_seed.yaml
+tal agent run --config config/agents/codex_seed.yaml
+```
+
+To run multiple agents simultaneously with Docker Compose, uncomment and
+adapt the example services in `docker-compose.yml`:
+
+```yaml
+  # agent_codex_seed:
+  #   build: .
+  #   env_file: .env
+  #   command: ["agent","run","--config","config/agents/codex_seed.yaml"]
+  #   volumes: ["./artifacts:/app/artifacts", "./lab.db:/app/lab.db"]
+
+  # agent_rsi_v2:
+  #   image: trading-agent-lab-lab
+  #   command: ["agent","run","--config","config/agents/rsi_v2.yaml"]
+  #   volumes: ["./artifacts:/app/artifacts", "./lab.db:/app/lab.db"]
+```
+
+For a one-off backtest inside Docker without editing the compose file:
+
+```bash
+docker compose run --rm lab tal agent backtest --config config/agents/codex_seed.yaml
+```
 ## Docker Quickstart
 
 ```bash
