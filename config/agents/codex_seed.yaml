@@ -1,0 +1,23 @@
+agent:
+  id: codex_seed
+  version: 0
+  capital: 100
+components:
+  strategy: tal.strategies.rsi_mean_rev.RSIMeanReversion
+universe: ["SPY"]
+data:
+  timeframe: "1d"
+  lookback_bars: 1000
+strategy:
+  params: { rsi_len: 14, oversold: 30, overbought: 70, size_pct: 10 }
+risk:
+  max_drawdown_pct: 20
+  max_position_pct: 50
+evaluation:
+  kpis: ["pnl", "profit_factor", "sharpe", "max_dd", "win_rate"]
+orchestrator:
+  market_hours: { timezone: "America/New_York", open: "09:30", close: "16:00" }
+  cycle_minutes: 5
+storage:
+  db_url: "sqlite:///./lab.db"
+  artifacts_dir: "./artifacts"

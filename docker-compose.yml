@@ -4,3 +4,14 @@ services:
     env_file: .env
     volumes: ["./artifacts:/app/artifacts"]
     command: ["orchestrate", "--config", "config/base.yaml"]
+
+  # agent_codex_seed:
+  #   build: .
+  #   env_file: .env
+  #   command: ["agent","run","--config","config/agents/codex_seed.yaml"]
+  #   volumes: ["./artifacts:/app/artifacts", "./lab.db:/app/lab.db"]
+
+  # agent_rsi_v2:
+  #   image: trading-agent-lab-lab
+  #   command: ["agent","run","--config","config/agents/rsi_v2.yaml"]
+  #   volumes: ["./artifacts:/app/artifacts", "./lab.db:/app/lab.db"]

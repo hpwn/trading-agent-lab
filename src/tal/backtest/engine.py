@@ -97,12 +97,13 @@ def _current_commit_sha() -> str | None:
 def run_backtest(config_path: str):
     cfg, expanded_config = load_config(config_path)
     run_id = os.environ.get("RUN_ID", str(uuid.uuid4()))
-    agent_id = cfg.get("agent", {}).get("id") or cfg.get("strategy", {}).get("name", "unknown")
+    strategy_cfg = cfg.get("strategy", {})
+    agent_id = cfg.get("agent_id") or cfg.get("agent", {}).get("id") or strategy_cfg.get("name", "unknown")
     ts_start = datetime.now(timezone.utc)
 
     sym = cfg["universe"]["symbols"][0]
     df = _load_data(sym, cfg["data"]["lookback_bars"], cfg["data"]["timeframe"])
-    params = dict(cfg["strategy"]["params"])
+    params = dict(strategy_cfg.get("params", {}))
     size_pct = float(params.pop("size_pct", 10))
     strat = RSIMeanReversion(**params)
     sig = strat.generate_signals(df)
