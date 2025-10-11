@@ -74,6 +74,36 @@ Tests and CI only exercise the simulator—no network calls are made.
 - Simulated fills are routed through the in-memory broker to reach the target.
 - Tests can provide deterministic price history by passing a price map directly to
   `tal.live.wrapper.run_live_once` (see `tests/test_live_signal_routing.py`).
+
+## League manager
+
+Coordinate multiple agents with the new league controller. By default the league
+operates entirely offline—`tal live` and the league runner both use the
+simulated broker, so CI and local development remain deterministic.
+
+```bash
+tal league live-once --config config/base.yaml
+tal league nightly --config config/base.yaml
+```
+
+`league live-once` runs a single live step for every agent YAML under
+`league.agents_dir`, redirecting each agent to its own ledger directory under
+`league.artifacts_dir`. The nightly command loads recent performance from the
+shared SQLite database, aggregates metrics, and writes promotion/retirement
+recommendations to `artifacts/league/allocations.json`.
+
+Each agent specification now captures provenance metadata (`builder` and
+`lineage` blocks). This information is persisted in the `agents` table whenever
+live or backtest runs are recorded. The leaderboard CLI supports grouping by
+agent or builder to compare strategies from the same model family:
+
+```bash
+tal eval --group builder --since 30d --format table
+```
+
+The builder view collapses agents by `builder_name`, averaging KPIs across the
+latest runs. Use this to compare parameter mutations from the same base model or
+prompt lineage.
 ## Docker Quickstart
 
 ```bash

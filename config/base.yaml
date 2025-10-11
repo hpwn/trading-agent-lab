@@ -25,3 +25,9 @@ orchestrator:
 storage:
   db_url: "sqlite:///./lab.db"
   artifacts_dir: "./artifacts"
+league:
+  agents_dir: "config/agents"
+  artifacts_dir: "./artifacts/league"
+  top_k: 3
+  retire_k: 1
+  since_days: 30

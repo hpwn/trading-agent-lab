@@ -4,6 +4,25 @@ from pydantic import BaseModel, Field
 from typing import Dict, List, Optional
 
 
+class BuilderInfo(BaseModel):
+    name: Optional[str] = None
+    model: Optional[str] = None
+    prompt_hash: Optional[str] = None
+    run_id: Optional[str] = None
+
+
+class LineageInfo(BaseModel):
+    parent_id: Optional[str] = None
+    version: Optional[int] = None
+    mutation: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class AgentMetadata(BaseModel):
+    builder: Optional[BuilderInfo] = None
+    lineage: Optional[LineageInfo] = None
+
+
 class Components(BaseModel):
     strategy: str = Field(
         ...,
@@ -74,3 +93,4 @@ class AgentSpec(BaseModel):
     orchestrator: OrchestratorCfg = OrchestratorCfg()
     storage: StorageCfg = StorageCfg()
     live: LiveCfg = LiveCfg()
+    metadata: Optional[AgentMetadata] = None

@@ -24,7 +24,10 @@ DEFAULT_ENV = {
 
 
 def _load_env(env_file: str | None = None) -> None:
-    env_path = Path(env_file or os.environ.get("TAL_ENV_FILE", ".env"))
+    env_candidate = env_file if env_file is not None else os.environ.get("TAL_ENV_FILE")
+    if env_candidate is None:
+        env_candidate = ".env"
+    env_path = Path(env_candidate)
     if env_path.exists():
         for line in env_path.read_text().splitlines():
             line = line.strip()
@@ -63,7 +66,7 @@ DEFAULT_CONFIG_PATH = Path("config/base.yaml")
 
 
 def load_config(config_path: str):
-    import yaml
+    import yaml  # type: ignore[import-untyped]
 
     _load_env()
     requested_path = Path(config_path)
@@ -77,6 +80,13 @@ def load_config(config_path: str):
     cfg = yaml.safe_load(expanded)
     os.environ["TAL_ACTIVE_CONFIG"] = str(requested_path.resolve())
     return cfg, expanded
+
+
+def _load_config(config_path: str) -> dict:
+    """Load a config file and return the parsed dictionary only."""
+
+    cfg, _ = load_config(config_path)
+    return cfg
 
 
 def _current_commit_sha() -> str | None:
@@ -136,6 +146,7 @@ def run_backtest(config_path: str):
             {"run_id": run_id, "name": name, "value": safe_metrics[name]}
             for name in kpis
         ],
+        engine_cfg=cfg,
     )
 
     run_artifacts = artifacts_dir / "runs" / run_id

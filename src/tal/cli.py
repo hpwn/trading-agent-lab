@@ -1,17 +1,21 @@
-from pathlib import Path
 import json
+from pathlib import Path
 import tempfile
 
 import typer
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from tal.agents.registry import load_agent_config, to_engine_config
+from tal.backtest.engine import _load_config
 from tal.live.wrapper import run_live_once
+from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 from tal.orchestrator.day_night import run_loop
 
 app = typer.Typer(help="Trading Agent Lab (CLI only)")
 agent_app = typer.Typer(help="Agent-specific commands")
+league_app = typer.Typer(help="League manager: multi-agent live & nightly eval")
 app.add_typer(agent_app, name="agent")
+app.add_typer(league_app, name="league")
 
 
 @agent_app.command("backtest")
@@ -48,6 +52,34 @@ def _dump_temp_engine_cfg(engine_cfg: dict) -> str:
     finally:
         tmp.close()
     return tmp.name
+
+
+@league_app.command("live-once")
+def league_live_once(config: str = "config/base.yaml"):
+    """Run one live step for every league agent."""
+
+    cfg = _load_config(config)
+    lc = LeagueCfg(**cfg.get("league", {}))
+    db_url = cfg.get("storage", {}).get("db_url", "sqlite:///./lab.db")
+    res = live_step_all(db_url, lc.agents_dir, lc.artifacts_dir)
+    print(json.dumps(res, indent=2))
+
+
+@league_app.command("nightly")
+def league_nightly(config: str = "config/base.yaml"):
+    """Evaluate recent runs and compute allocations."""
+
+    cfg = _load_config(config)
+    lc = LeagueCfg(**cfg.get("league", {}))
+    db_url = cfg.get("storage", {}).get("db_url", "sqlite:///./lab.db")
+    res = nightly_eval(
+        db_url,
+        lc.artifacts_dir,
+        lc.since_days,
+        lc.top_k,
+        lc.retire_k,
+    )
+    print(json.dumps(res, indent=2))
 
 
 @app.command()
@@ -95,6 +127,13 @@ def evaluate(
         help="Output format: table or json.",
         show_default=True,
     ),
+    group: str = typer.Option(
+        "agent",
+        "--group",
+        case_sensitive=False,
+        help="Grouping for leaderboard (agent or builder).",
+        show_default=True,
+    ),
     config: str = typer.Option(
         "config/base.yaml",
         "--config",
@@ -102,37 +141,40 @@ def evaluate(
         show_default=True,
     ),
 ):
-    """Evaluate the latest backtests for each agent."""
+    """Evaluate the latest runs with optional grouping."""
 
     from tal.backtest.engine import load_config
-    from tal.evaluation.leaderboard import (
-        build_leaderboard,
-        format_json,
-        format_table,
-        resolve_window,
-    )
+    from tal.evaluation.leaderboard import format_json, format_table, resolve_window, summarize
     from tal.storage.db import get_engine
 
     since_key = since.lower()
     try:
-        _, since_iso = resolve_window(since_key)
+        _, _ = resolve_window(since_key)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
+
+    window_days = {"1d": 1, "7d": 7, "30d": 30}.get(since_key)
+    if window_days is None:
+        raise typer.BadParameter("Unsupported window; choose 1d, 7d, or 30d.")
+
+    group_key = group.lower()
+    if group_key not in {"agent", "builder"}:
+        raise typer.BadParameter("Group must be 'agent' or 'builder'.")
 
     cfg, _ = load_config(config)
     storage_cfg = cfg.get("storage", {})
     db_url = storage_cfg.get("db_url", "sqlite:///./lab.db")
 
     engine = get_engine(db_url)
-    leaderboard = build_leaderboard(engine, since_iso)
+    rows = summarize(engine, since_days=window_days, group=group_key)
 
     fmt = output_format.lower()
     if fmt not in {"table", "json"}:
         raise typer.BadParameter("Format must be 'table' or 'json'.")
     if fmt == "json":
-        typer.echo(format_json(leaderboard))
+        typer.echo(format_json(rows))
     else:
-        typer.echo(format_table(leaderboard))
+        typer.echo(format_table(rows, group=group_key))
 
 
 @agent_app.command("live")

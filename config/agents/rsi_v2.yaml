@@ -27,3 +27,11 @@ live:
   commission: 0.0
   slippage_bps: 1.0
   ledger_dir: "./artifacts/live"
+metadata:
+  builder:
+    name: "Codex"
+    model: "gpt-5-coder"
+  lineage:
+    version: 2
+    parent_id: "codex_seed@1"
+    mutation: "param tweak"
