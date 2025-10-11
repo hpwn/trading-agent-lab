@@ -75,16 +75,13 @@ export ALPACA_API_KEY_ID=...
 export ALPACA_API_SECRET_KEY=...
 # optional overrides
 export ALPACA_BASE_URL=...
-export ALPACA_DATA_BASE_URL=...
 ```
 
 The runtime adapter reads credentials from the environment. A `.env` file with
 these keys is sufficient for local testing.
 
-- `ALPACA_BASE_URL` controls the trading API host (defaults to Alpaca's paper or live
-  trading endpoints based on `live.paper`).
-- `ALPACA_DATA_BASE_URL` controls the market data host (defaults to
-  `https://data.alpaca.markets`).
+- `ALPACA_BASE_URL` (optional) overrides the *trading* endpoint. The market data
+  client uses Alpaca's default data host and is not overridden.
 
 Point the live CLI to the bundled paper config to try the integration:
 
