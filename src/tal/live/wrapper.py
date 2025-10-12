@@ -6,14 +6,16 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from collections.abc import Mapping
+import sys
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from .adapters import AlpacaClient, SimMarketData, build_broker
 from .base import Fill, Order
+from tal.achievements import record_trade_notional
 from tal.storage.db import get_engine, record_order, record_run
 
 
@@ -209,6 +211,20 @@ def run_live_once(
                     "status": getattr(fill, "status", "filled"),
                 },
             )
+
+        try:
+            notional = abs(float(fill.price) * float(fill.qty))
+            execute_flag = os.getenv("LIVE_EXECUTE", "0").lower()
+            execute_enabled = execute_flag in {"1", "true", "yes"}
+            broker_name = live_cfg.adapter
+            achievement_mode: Literal["paper", "real"] = (
+                "real" if broker_name == "alpaca" and execute_enabled else "paper"
+            )
+            unlocked = record_trade_notional(notional, achievement_mode)
+            if unlocked:
+                print(f"[achievements] unlocked: {', '.join(unlocked)}")
+        except Exception as exc:  # pragma: no cover - best effort logging
+            print(f"[achievements] error: {exc}", file=sys.stderr)
 
     if db_engine is not None:
         record_run(

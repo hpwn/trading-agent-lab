@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from typing import Any
+from typing import Any, Literal, SupportsFloat
 
 # Autoload .env if present (do not override variables already exported)
 try:
@@ -16,19 +16,23 @@ except Exception:
 import typer
 import yaml  # type: ignore[import-untyped]
 
+from tal import achievements
 from tal.agents.registry import load_agent_config, to_engine_config
 from tal.backtest.engine import _load_config
 from tal.live.wrapper import run_live_once, _build_alpaca_client_from_env
 from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 from tal.orchestrator.day_night import run_loop
+from tal.storage.db import fetch_metrics_for_runs, fetch_runs_since, get_engine
 
 app = typer.Typer(help="Trading Agent Lab (CLI only)")
 agent_app = typer.Typer(help="Agent-specific commands")
 league_app = typer.Typer(help="League manager: multi-agent live & nightly eval")
 doctor_app = typer.Typer(help="Runtime diagnostics")
+achievements_app = typer.Typer(help="Fun, optional trading achievements")
 app.add_typer(agent_app, name="agent")
 app.add_typer(league_app, name="league")
 app.add_typer(doctor_app, name="doctor")
+app.add_typer(achievements_app, name="achievements")
 
 
 def _fmt_float(value: Any) -> str:
@@ -36,6 +40,46 @@ def _fmt_float(value: Any) -> str:
         return f"{float(value):.2f}"
     except (TypeError, ValueError):
         return str(value)
+
+
+@achievements_app.command("ls")
+def achievements_ls() -> None:
+    """List unlocked achievements."""
+
+    try:
+        state = achievements.list_achievements()
+    except Exception as exc:  # pragma: no cover - unexpected filesystem issues
+        typer.echo(f"[achievements] failed to load state: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raw_entries = state.get("achievements", {})
+    entries: list[dict[str, Any]] = []
+    if isinstance(raw_entries, dict):
+        for entry in raw_entries.values():
+            if isinstance(entry, dict):
+                entries.append(entry)
+    entries.sort(key=lambda item: str(item.get("ts", "")))
+    typer.echo(json.dumps(entries, indent=2, sort_keys=True))
+
+
+@achievements_app.command("reset")
+def achievements_reset(
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Confirm the reset; all achievements and badges will be removed.",
+    ),
+) -> None:
+    """Reset all tracked achievements."""
+
+    if not yes:
+        typer.echo("Refusing to reset achievements without --yes", err=True)
+        raise typer.Exit(code=1)
+    try:
+        achievements.reset_achievements()
+    except Exception as exc:  # pragma: no cover - filesystem issues
+        typer.echo(f"[achievements] failed to reset: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo("Achievements reset.")
 
 
 @doctor_app.command("alpaca")
@@ -227,11 +271,10 @@ def evaluate(
 
     from tal.backtest.engine import load_config
     from tal.evaluation.leaderboard import format_json, format_table, resolve_window, summarize
-    from tal.storage.db import get_engine
 
     since_key = since.lower()
     try:
-        _, _ = resolve_window(since_key)
+        _, since_iso = resolve_window(since_key)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
@@ -250,6 +293,44 @@ def evaluate(
     engine = get_engine(db_url)
     rows = summarize(engine, since_days=window_days, group=group_key)
 
+    pnl_pct_total = 0.0
+    try:
+        runs = fetch_runs_since(engine, since_iso)
+        if runs:
+            run_ids = [str(row.get("id")) for row in runs if row.get("id") is not None]
+            metrics = fetch_metrics_for_runs(engine, run_ids)
+            for metric in metrics:
+                if metric.get("name") != "pnl":
+                    continue
+                value_obj = metric.get("value")
+                if isinstance(value_obj, (int, float)):
+                    pnl_pct_total += float(value_obj)
+                    continue
+                if isinstance(value_obj, SupportsFloat):
+                    pnl_pct_total += float(value_obj)
+                    continue
+                if isinstance(value_obj, str):
+                    try:
+                        pnl_pct_total += float(value_obj)
+                        continue
+                    except ValueError:
+                        continue
+    except Exception:
+        pnl_pct_total = 0.0
+
+    capital_raw = os.getenv("CAPITAL")
+    try:
+        capital = float(capital_raw) if capital_raw is not None else 10_000.0
+    except (TypeError, ValueError):
+        capital = 10_000.0
+    pnl_dollars = max(0.0, pnl_pct_total * capital)
+    execute_flag = os.getenv("LIVE_EXECUTE", "0").lower()
+    execute_enabled = execute_flag in {"1", "true", "yes"}
+    broker_mode = os.getenv("LIVE_BROKER", "").lower()
+    achievement_mode: Literal["paper", "real"] = (
+        "real" if broker_mode == "alpaca" and execute_enabled else "paper"
+    )
+
     fmt = output_format.lower()
     if fmt not in {"table", "json"}:
         raise typer.BadParameter("Format must be 'table' or 'json'.")
@@ -257,6 +338,15 @@ def evaluate(
         typer.echo(format_json(rows))
     else:
         typer.echo(format_table(rows, group=group_key))
+
+    if pnl_dollars > 0:
+        try:
+            unlocked = achievements.record_profit_dollars(pnl_dollars, achievement_mode)
+        except Exception as exc:  # pragma: no cover - best effort logging
+            typer.echo(f"[achievements] error: {exc}", err=True)
+        else:
+            if unlocked:
+                typer.echo(f"[achievements] unlocked: {', '.join(unlocked)}")
 
 
 @agent_app.command("live")
