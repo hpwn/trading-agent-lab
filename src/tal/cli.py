@@ -1,12 +1,14 @@
+from __future__ import annotations
+
 import json
 import os
-from pathlib import Path
 import tempfile
+from pathlib import Path
 from typing import Any, Literal, SupportsFloat
 
 # Autoload .env if present (do not override variables already exported)
 try:
-    from dotenv import find_dotenv, load_dotenv  # type: ignore
+    from dotenv import find_dotenv, load_dotenv
 
     load_dotenv(find_dotenv(usecwd=True), override=False)
 except Exception:
@@ -14,7 +16,7 @@ except Exception:
     pass
 
 import typer
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 from tal import achievements, achievements_badges
 from tal.agents.registry import load_agent_config, to_engine_config
@@ -146,7 +148,7 @@ def doctor_alpaca(
         "--base-url",
         help="Override the Alpaca trading API base URL.",
     ),
-):
+) -> None:
     """Validate Alpaca credentials and basic account connectivity."""
 
     required = ["ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY"]
@@ -203,7 +205,7 @@ def doctor_alpaca(
 @agent_app.command("backtest")
 def agent_backtest(
     config: str = typer.Option(..., "--config", help="Path to agent config YAML.")
-):
+) -> None:
     """Backtest for a specific agent YAML."""
     config_path = Path(config)
     spec = load_agent_config(str(config_path))
@@ -215,7 +217,9 @@ def agent_backtest(
 
 
 @agent_app.command("run")
-def agent_run(config: str = typer.Option(..., "--config", help="Path to agent config YAML.")):
+def agent_run(
+    config: str = typer.Option(..., "--config", help="Path to agent config YAML.")
+) -> None:
     """Run orchestrator loop for a specific agent YAML."""
     config_path = Path(config)
     spec = load_agent_config(str(config_path))
@@ -226,7 +230,7 @@ def agent_run(config: str = typer.Option(..., "--config", help="Path to agent co
     loop(tmp_path)
 
 
-def _dump_temp_engine_cfg(engine_cfg: dict) -> str:
+def _dump_temp_engine_cfg(engine_cfg: dict[str, Any]) -> str:
     tmp = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
     try:
         yaml.safe_dump(engine_cfg, tmp)
@@ -237,7 +241,7 @@ def _dump_temp_engine_cfg(engine_cfg: dict) -> str:
 
 
 @league_app.command("live-once")
-def league_live_once(config: str = "config/base.yaml"):
+def league_live_once(config: str = "config/base.yaml") -> None:
     """Run one live step for every league agent."""
 
     cfg = _load_config(config)
@@ -248,7 +252,7 @@ def league_live_once(config: str = "config/base.yaml"):
 
 
 @league_app.command("nightly")
-def league_nightly(config: str = "config/base.yaml"):
+def league_nightly(config: str = "config/base.yaml") -> None:
     """Evaluate recent runs and compute allocations."""
 
     cfg = _load_config(config)
@@ -265,13 +269,13 @@ def league_nightly(config: str = "config/base.yaml"):
 
 
 @app.command()
-def orchestrate(config: str = "config/base.yaml"):
+def orchestrate(config: str = "config/base.yaml") -> None:
     """Run the day/night loop (paper during market; tune after hours)."""
     run_loop(config_path=config)
 
 
 @app.command()
-def backtest(config: str = "config/base.yaml"):
+def backtest(config: str = "config/base.yaml") -> None:
     """Run a single backtest with current strategy + params."""
     # import lazily to keep startup snappy
     from tal.backtest.engine import run_backtest
@@ -280,7 +284,9 @@ def backtest(config: str = "config/base.yaml"):
 
 
 @app.command(name="live")
-def live_once(config: str = typer.Option(..., "--config", help="Path to engine config YAML.")):
+def live_once(
+    config: str = typer.Option(..., "--config", help="Path to engine config YAML.")
+) -> None:
     """Execute one live step using the configured broker (paper by default)."""
 
     from tal.backtest.engine import load_config
@@ -322,7 +328,7 @@ def evaluate(
         help="Path to config for storage settings.",
         show_default=True,
     ),
-):
+) -> None:
     """Evaluate the latest runs with optional grouping."""
 
     from tal.backtest.engine import load_config
@@ -408,7 +414,9 @@ def evaluate(
 
 
 @agent_app.command("live")
-def agent_live(config: str = typer.Option(..., "--config", help="Path to agent config YAML.")):
+def agent_live(
+    config: str = typer.Option(..., "--config", help="Path to agent config YAML.")
+) -> None:
     """Run one live step for a specific AgentSpec YAML."""
 
     spec = load_agent_config(config)

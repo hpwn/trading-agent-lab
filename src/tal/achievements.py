@@ -204,7 +204,8 @@ def all_planned_badge_keys() -> list[str]:
     """Return the canonical list of badge keys across modes."""
 
     keys: list[str] = []
-    for mode in ("paper", "real"):
+    for is_real in (False, True):
+        mode: Mode = "real" if is_real else "paper"
         for threshold in _NOTIONAL_THRESHOLDS:
             keys.append(_achievement_key("trade", threshold, mode))
         for threshold in _PROFIT_THRESHOLDS:

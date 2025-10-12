@@ -6,7 +6,7 @@ import json
 import numbers
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 import pandas as pd
 
@@ -29,7 +29,7 @@ def resolve_window(key: str, now: datetime | None = None) -> tuple[datetime, str
     return since_dt, since_dt.isoformat()
 
 
-def build_leaderboard(engine, since_iso: str) -> pd.DataFrame:
+def build_leaderboard(engine: Any, since_iso: str) -> pd.DataFrame:
     """Build a leaderboard DataFrame for runs since the provided ISO timestamp."""
 
     runs = fetch_runs_since(engine, since_iso)
@@ -75,15 +75,15 @@ def build_leaderboard(engine, since_iso: str) -> pd.DataFrame:
     return leaderboard
 
 
-def _ensure_engine(db) -> Any:
+def _ensure_engine(db: Any) -> Any:
     return getattr(db, "sa", db)
 
 
-def by_agent(db, since_days: int = 30) -> list[dict[str, Any]]:
+def by_agent(db: Any, since_days: int = 30) -> list[dict[str, Any]]:
     engine = _ensure_engine(db)
     since_dt = datetime.now(timezone.utc) - timedelta(days=since_days)
     df = build_leaderboard(engine, since_dt.isoformat())
-    records = df.to_dict(orient="records")
+    records = cast(list[dict[str, Any]], df.to_dict(orient="records"))
     agents_meta = {row["agent_id"]: row for row in fetch_agents(engine)}
     for row in records:
         meta = agents_meta.get(row["agent_id"])
@@ -110,7 +110,7 @@ def _safe_add_metric(container: dict[str, list[float]], key: str, value: Any) ->
     container.setdefault(key, []).append(numeric)
 
 
-def by_builder(db, since_days: int = 30) -> list[dict[str, Any]]:
+def by_builder(db: Any, since_days: int = 30) -> list[dict[str, Any]]:
     rows = by_agent(db, since_days=since_days)
     if not rows:
         return []
@@ -129,7 +129,7 @@ def by_builder(db, since_days: int = 30) -> list[dict[str, Any]]:
         )
         if grp.get("builder_model") is None and row.get("builder_model"):
             grp["builder_model"] = row.get("builder_model")
-        grp["agent_ids"].append(row.get("agent_id"))
+        grp["agent_ids"].append(str(row.get("agent_id") or ""))
         grp["runs"] += int(row.get("runs", 0))
         metric_container = metrics.setdefault(builder, {})
         for metric in ("profit_factor", "sharpe", "max_dd", "win_rate"):
@@ -153,7 +153,7 @@ def by_builder(db, since_days: int = 30) -> list[dict[str, Any]]:
     return results
 
 
-def summarize(db, since_days: int = 30, group: str = "agent") -> list[dict[str, Any]]:
+def summarize(db: Any, since_days: int = 30, group: str = "agent") -> list[dict[str, Any]]:
     group_key = (group or "agent").lower()
     if group_key == "builder":
         return by_builder(db, since_days=since_days)
@@ -213,9 +213,9 @@ def format_table(data: Sequence[Mapping[str, Any]] | pd.DataFrame, group: str = 
     if isinstance(data, pd.DataFrame):
         if data.empty:
             return "No runs found in the selected window."
-        records = data.to_dict(orient="records")
+        records = cast(list[dict[str, Any]], data.to_dict(orient="records"))
     else:
-        records = list(data)
+        records = [dict(row) for row in data]
         if not records:
             return "No runs found in the selected window."
     return print_table(records, group=group)
@@ -225,7 +225,7 @@ def format_json(data: Sequence[Mapping[str, Any]] | pd.DataFrame) -> str:
     """Format the leaderboard as JSON."""
 
     if isinstance(data, pd.DataFrame):
-        records = data.to_dict(orient="records")
+        records = cast(list[dict[str, Any]], data.to_dict(orient="records"))
     else:
-        records = list(data)
+        records = [dict(row) for row in data]
     return json.dumps(records, indent=2)

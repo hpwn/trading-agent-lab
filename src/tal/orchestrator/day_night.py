@@ -3,10 +3,11 @@ from __future__ import annotations
 import datetime as dt
 import os
 import time
-from pathlib import Path
-from typing import Any
 import zoneinfo
-import yaml  # type: ignore[import-untyped]
+from pathlib import Path
+from typing import Any, Mapping
+
+import yaml
 
 from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 
@@ -37,16 +38,19 @@ def _load_env(env_file: str | None = None) -> None:
         os.environ.setdefault(key, value)
 
 
-def _load_cfg(path: str):
+def _load_cfg(path: str) -> dict[str, Any]:
     _load_env()
     with open(path, "r") as f:
         raw = f.read()
     for k, v in os.environ.items():
         raw = raw.replace("${" + k + "}", v)
-    return yaml.safe_load(raw)
+    data = yaml.safe_load(raw)
+    if not isinstance(data, dict):
+        raise TypeError("Orchestrator config must be a mapping")
+    return data
 
 
-def market_open_now(cfg, now: dt.datetime | None = None) -> bool:
+def market_open_now(cfg: Mapping[str, Any], now: dt.datetime | None = None) -> bool:
     hours = cfg["orchestrator"]["market_hours"]
     tz = zoneinfo.ZoneInfo(hours["timezone"])
     ts = now or dt.datetime.now(tz)
@@ -55,7 +59,7 @@ def market_open_now(cfg, now: dt.datetime | None = None) -> bool:
     return open_t <= ts < close_t and ts.weekday() <= 4
 
 
-def _summarize(result) -> str:
+def _summarize(result: Any) -> str:
     if isinstance(result, list):
         return f"{len(result)} agents"
     if isinstance(result, dict):
@@ -66,7 +70,7 @@ def _summarize(result) -> str:
     return str(result)
 
 
-def run_loop(config_path: str):
+def run_loop(config_path: str) -> None:
     cfg = _load_cfg(config_path)
     storage_cfg = cfg.get("storage", {})
     db_url = storage_cfg.get("db_url", "sqlite:///./lab.db")

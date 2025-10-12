@@ -13,6 +13,12 @@ tal backtest --config config/base.yaml
 tal orchestrate --config config/base.yaml
 ```
 
+## Dev setup
+
+- Install tooling: `pip install -e ".[dev]"`
+- Type check: `mypy src`
+- Lint: `ruff check .`
+
 ## Running multiple agents
 
 The CLI exposes agent-aware commands that load an `AgentSpec` and run the
