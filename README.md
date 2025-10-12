@@ -64,21 +64,37 @@ pip install -e ".[alpaca]"
 
 Tests and CI only exercise the simulator—no network calls are made.
 
-### Alpaca (paper) quickstart
+## Configuration
 
-The runtime adapter reads credentials from the environment. A `.env` file
-containing the following keys is sufficient for local testing:
+### .env autoload
+
+The `tal` CLI auto-loads a local `.env` from your current working directory.
+
+- **Precedence:** real environment variables > `.env` entries.
+- Already-exported variables in your shell are **not** overridden by `.env`.
+
+Required for Alpaca paper/live setups:
 
 ```
 ALPACA_API_KEY_ID=...
 ALPACA_API_SECRET_KEY=...
+ALPACA_PAPER=true
+
+# Optional overrides
 ALPACA_BASE_URL=https://paper-api.alpaca.markets
+ALPACA_DATA_URL=https://data.alpaca.markets
 ```
 
-- `ALPACA_BASE_URL` controls the trading API host (defaults to Alpaca's paper or live
-  trading endpoints based on `live.paper`).
-- `ALPACA_DATA_BASE_URL` controls the market data host (defaults to
-  `https://data.alpaca.markets`).
+- `ALPACA_BASE_URL` (optional) overrides the *trading* endpoint. The market data
+  client uses Alpaca's default host and is not overridden.
+
+### Alpaca (paper) quickstart
+
+Install the optional runtime extra before running any paper trades:
+
+```bash
+pip install -e ".[alpaca]"
+```
 
 Point the live CLI to the bundled paper config to try the integration:
 

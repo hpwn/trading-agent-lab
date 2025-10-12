@@ -6,14 +6,15 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any
+from collections.abc import Mapping
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from .adapters import AlpacaClient, SimMarketData, build_broker
-from .base import Order
-from tal.storage.db import get_engine, record_run
+from .base import Fill, Order
+from tal.storage.db import get_engine, record_order, record_run
 
 
 class LiveCfg(BaseModel):
@@ -42,6 +43,20 @@ class LiveCfg(BaseModel):
         return values
 
 
+def _ensure_ledger(ledger_dir: Path) -> Path:
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    trades_path = ledger_dir / "trades.csv"
+    if not trades_path.exists():
+        trades_path.write_text("ts,symbol,side,qty,price\n")
+    return trades_path
+
+
+def _append_trade(trades_path: Path, fill: Fill, *, ts: datetime) -> None:
+    epoch = int(ts.timestamp())
+    with trades_path.open("a") as handle:
+        handle.write(f"{epoch},{fill.symbol},{fill.side},{fill.qty},{fill.price}\n")
+
+
 def _load_strategy(strategy_name: str):
     if strategy_name == "rsi_mean_rev":
         mod = importlib.import_module("tal.strategies.rsi_mean_rev")
@@ -50,15 +65,15 @@ def _load_strategy(strategy_name: str):
 
 
 def _select_alpaca_urls(
-    *, paper: bool, trading_env: str | None, data_env: str | None
-) -> Tuple[str, str]:
+    *, paper: bool, trading_env: str | None
+) -> tuple[str, str]:
     """Decide trading and data base URLs for Alpaca clients."""
 
     trading_url = (
         trading_env
         or ("https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets")
     )
-    data_url = data_env or "https://data.alpaca.markets"
+    data_url = "https://data.alpaca.markets"
     return trading_url, data_url
 
 
@@ -72,6 +87,8 @@ def run_live_once(
 
     ts_start = datetime.now(timezone.utc)
     live_cfg = LiveCfg(**engine_cfg.get("live", {}))
+    ledger_dir = Path(live_cfg.ledger_dir)
+    trades_path = _ensure_ledger(ledger_dir)
     universe = engine_cfg.get("universe", {})
     symbols: list[str] = []
     if isinstance(universe, dict):
@@ -109,7 +126,7 @@ def run_live_once(
     else:
         broker_kwargs = {
             "cash": live_cfg.cash,
-            "ledger_dir": Path(live_cfg.ledger_dir),
+            "ledger_dir": ledger_dir,
             "commission": live_cfg.commission,
             "slippage_bps": live_cfg.slippage_bps,
         }
@@ -158,19 +175,44 @@ def run_live_once(
     }
     storage_cfg = engine_cfg.get("storage", {})
     db_url = storage_cfg.get("db_url")
-    if db_url:
-        agent_cfg = engine_cfg.get("agent") or {}
-        agent_id = (
-            agent_cfg.get("id")
-            or engine_cfg.get("agent_id")
-            or engine_cfg.get("agent", {}).get("id")
-            or "unknown"
-        )
-        mode = engine_cfg.get("mode", "live")
-        run_id = engine_cfg.get("run_id") or str(uuid.uuid4())
-        engine = get_engine(db_url)
+    db_engine = get_engine(db_url) if db_url else None
+    agent_cfg_obj = engine_cfg.get("agent")
+    agent_cfg: Mapping[str, Any] = (
+        agent_cfg_obj if isinstance(agent_cfg_obj, Mapping) else {}
+    )
+    agent_id = (
+        agent_cfg.get("id")
+        or engine_cfg.get("agent_id")
+        or agent_cfg.get("agent_id")
+        or "unknown"
+    )
+    mode = engine_cfg.get("mode", "live")
+    run_id = engine_cfg.get("run_id") or str(uuid.uuid4())
+
+    if fill:
+        event_ts = datetime.now(timezone.utc)
+        _append_trade(trades_path, fill, ts=event_ts)
+        if db_engine is not None:
+            broker_order_id = getattr(fill, "broker_order_id", None)
+            record_order(
+                db_engine,
+                {
+                    "id": broker_order_id or f"{run_id}:{uuid.uuid4()}",
+                    "ts": event_ts.isoformat(),
+                    "agent_id": agent_id,
+                    "symbol": fill.symbol,
+                    "side": fill.side,
+                    "qty": fill.qty,
+                    "price": fill.price,
+                    "broker": live_cfg.adapter,
+                    "broker_order_id": broker_order_id,
+                    "status": getattr(fill, "status", "filled"),
+                },
+            )
+
+    if db_engine is not None:
         record_run(
-            engine,
+            db_engine,
             {
                 "id": run_id,
                 "agent_id": agent_id,
@@ -191,10 +233,9 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
     api_secret = os.environ.get("ALPACA_API_SECRET_KEY")
     if not api_key or not api_secret:
         raise RuntimeError("Missing Alpaca API credentials in environment")
-    trading_url, data_url = _select_alpaca_urls(
+    trading_url, _ = _select_alpaca_urls(
         paper=paper,
         trading_env=base_url or os.environ.get("ALPACA_BASE_URL"),
-        data_env=os.environ.get("ALPACA_DATA_BASE_URL"),
     )
     try:
         from alpaca.common.exceptions import APIError  # type: ignore
@@ -208,8 +249,10 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
 
     class _RuntimeAlpacaClient:
         def __init__(self) -> None:
-            self._trading = TradingClient(api_key, api_secret, paper=paper, base_url=trading_url)
-            self._data = StockHistoricalDataClient(api_key, api_secret, base_url=data_url)
+            self._trading = TradingClient(
+                api_key, api_secret, paper=paper, url_override=trading_url
+            )
+            self._data = StockHistoricalDataClient(api_key, api_secret)
 
         def get_last_price(self, symbol: str) -> float:
             req = StockLatestTradeRequest(symbol_or_symbols=symbol)

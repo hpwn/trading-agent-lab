@@ -59,9 +59,6 @@ class SimBroker(Broker):
         self.ledger_dir.mkdir(parents=True, exist_ok=True)
         self.commission = float(commission)
         self.slippage_bps = float(slippage_bps)
-        trades = self.ledger_dir / "trades.csv"
-        if not trades.exists():
-            trades.write_text("ts,symbol,side,qty,price\n")
 
     def cash(self) -> float:
         return self._cash
@@ -70,8 +67,6 @@ class SimBroker(Broker):
         return float(self._pos.get(symbol, 0.0))
 
     def submit(self, order: Order) -> Fill:
-        import time
-
         px = float(order.ref_price) if order.ref_price is not None else self._price(order.symbol)
         slip = px * (self.slippage_bps / 1e4)
         exec_px = px + slip if order.side == "buy" else px - slip
@@ -86,9 +81,10 @@ class SimBroker(Broker):
                 raise ValueError("Insufficient position")
             self._cash += exec_px * order.qty - self.commission
             self._pos[order.symbol] = self.position(order.symbol) - order.qty
-        with (self.ledger_dir / "trades.csv").open("a") as f:
-            f.write(f"{int(time.time())},{order.symbol},{order.side},{order.qty},{exec_px}\n")
-        return Fill(order.symbol, order.side, order.qty, exec_px)
+        fill = Fill(order.symbol, order.side, order.qty, exec_px)
+        fill.status = "filled"
+        fill.broker_order_id = None
+        return fill
 
     def cancel_all(self) -> None:  # no-op for sim
         return
