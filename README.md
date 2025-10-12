@@ -106,6 +106,22 @@ tal live --config config/live/alpaca_paper.yaml
 The config enables guardrails—max order notional, position sizing caps, and
 daily loss protection—all enforced locally before the request is sent to Alpaca.
 
+## Achievements (optional & fun)
+
+Unlock playful milestones as you trade—purely cosmetic but great for morale.
+
+- First $1/$10/$100/$1000 trade notional (tracked separately for paper vs. live).
+- First $1/$10/$100/$1000 profit milestones converted from PnL.
+- Artifacts live under `artifacts/achievements/` (state, NDJSON log, badge files).
+- CLI helpers: `tal achievements ls` and `tal achievements reset --yes`.
+- Generate README flair with `tal achievements badges --readme README.md` (manual; not run in CI).
+- Colors: green badges are unlocked, grey badges are waiting on future wins.
+
+<!-- ACHIEVEMENTS:START -->
+<!-- ACHIEVEMENTS:END -->
+
+Badges are stored as JSON for easy piping into dashboards or overlays down the road.
+
 ### Live signal routing & sizing
 
 - Signals are produced by the configured strategy (defaults to `rsi_mean_rev`) using

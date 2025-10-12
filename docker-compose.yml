@@ -2,6 +2,17 @@ services:
   lab:
     build: .
     env_file: .env
+    # Uncomment to override env vars directly in Compose
+    # environment:
+    #   LIVE_EXECUTE: "${LIVE_EXECUTE:-0}"
+    #   MAX_NOTIONAL_PER_TRADE: "${MAX_NOTIONAL_PER_TRADE:-1}"
+    #   DAILY_MAX_LOSS_PCT: "${DAILY_MAX_LOSS_PCT:-1}"
+    #   ALPACA_API_KEY_ID: "${ALPACA_API_KEY_ID:-}"
+    #   ALPACA_API_SECRET_KEY: "${ALPACA_API_SECRET_KEY:-}"
+    #   ALPACA_FEED: "${ALPACA_FEED:-iex}"
+    #   ALPACA_DATA_URL: "${ALPACA_DATA_URL:-}"
+    #   ACHIEVEMENTS_ENABLED: "${ACHIEVEMENTS_ENABLED:-1}"
+    #   ACHIEVEMENTS_DIR: "${ACHIEVEMENTS_DIR:-./artifacts/achievements}"
     volumes: ["./artifacts:/app/artifacts"]
     command: ["orchestrate", "--config", "config/base.yaml"]
 
