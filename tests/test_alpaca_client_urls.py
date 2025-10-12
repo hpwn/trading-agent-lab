@@ -51,3 +51,48 @@ def test_alpaca_clients_use_correct_urls(monkeypatch):
 
     assert calls["data_args"] == ("key", "secret")
     assert calls["data_kwargs"] == {}
+
+
+def test_alpaca_data_override_respected(monkeypatch):
+    calls = {"data_kwargs": None}
+
+    class FakeTradingClient:
+        def __init__(self, *_, **__):
+            pass
+
+    class FakeStockHistoricalDataClient:
+        def __init__(self, *_, **kwargs):
+            calls["data_kwargs"] = kwargs
+
+    modules = {
+        "alpaca.common.exceptions": types.ModuleType("alpaca.common.exceptions"),
+        "alpaca.trading.client": types.ModuleType("alpaca.trading.client"),
+        "alpaca.data.historical": types.ModuleType("alpaca.data.historical"),
+        "alpaca.data.requests": types.ModuleType("alpaca.data.requests"),
+        "alpaca.trading.enums": types.ModuleType("alpaca.trading.enums"),
+        "alpaca.trading.requests": types.ModuleType("alpaca.trading.requests"),
+    }
+
+    modules["alpaca.common.exceptions"].APIError = RuntimeError
+    modules["alpaca.trading.client"].TradingClient = FakeTradingClient
+    modules["alpaca.data.historical"].StockHistoricalDataClient = (
+        FakeStockHistoricalDataClient
+    )
+    modules["alpaca.data.requests"].StockLatestTradeRequest = object
+    modules["alpaca.trading.enums"].OrderSide = object
+    modules["alpaca.trading.enums"].TimeInForce = object
+    modules["alpaca.trading.requests"].MarketOrderRequest = object
+
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "key")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "secret")
+    monkeypatch.setenv("ALPACA_DATA_URL", "https://data.sandbox")
+
+    _build_alpaca_client_from_env(
+        paper=True,
+        base_url=None,
+    )
+
+    assert calls["data_kwargs"] == {"base_url": "https://data.sandbox"}

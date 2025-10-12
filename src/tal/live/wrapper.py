@@ -65,7 +65,7 @@ def _load_strategy(strategy_name: str):
 
 
 def _select_alpaca_urls(
-    *, paper: bool, trading_env: str | None
+    *, paper: bool, trading_env: str | None, data_env: str | None = None
 ) -> tuple[str, str]:
     """Decide trading and data base URLs for Alpaca clients."""
 
@@ -73,7 +73,7 @@ def _select_alpaca_urls(
         trading_env
         or ("https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets")
     )
-    data_url = "https://data.alpaca.markets"
+    data_url = data_env or "https://data.alpaca.markets"
     return trading_url, data_url
 
 
@@ -233,9 +233,12 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
     api_secret = os.environ.get("ALPACA_API_SECRET_KEY")
     if not api_key or not api_secret:
         raise RuntimeError("Missing Alpaca API credentials in environment")
-    trading_url, _ = _select_alpaca_urls(
+    trading_env = base_url or os.environ.get("ALPACA_BASE_URL")
+    data_env = os.environ.get("ALPACA_DATA_URL")
+    trading_url, data_url = _select_alpaca_urls(
         paper=paper,
-        trading_env=base_url or os.environ.get("ALPACA_BASE_URL"),
+        trading_env=trading_env,
+        data_env=data_env,
     )
     try:
         from alpaca.common.exceptions import APIError  # type: ignore
@@ -249,10 +252,16 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
 
     class _RuntimeAlpacaClient:
         def __init__(self) -> None:
-            self._trading = TradingClient(
-                api_key, api_secret, paper=paper, url_override=trading_url
-            )
-            self._data = StockHistoricalDataClient(api_key, api_secret)
+            trading_kwargs: dict[str, Any] = {"paper": paper}
+            if trading_env:
+                trading_kwargs["url_override"] = trading_url
+            self._trading = TradingClient(api_key, api_secret, **trading_kwargs)
+
+            data_kwargs: dict[str, Any] = {}
+            if data_env:
+                # Market data lives under data.alpaca.markets; only override if explicitly set.
+                data_kwargs["base_url"] = data_url
+            self._data = StockHistoricalDataClient(api_key, api_secret, **data_kwargs)
 
         def get_last_price(self, symbol: str) -> float:
             req = StockLatestTradeRequest(symbol_or_symbols=symbol)
