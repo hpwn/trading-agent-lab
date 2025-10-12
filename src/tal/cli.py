@@ -4,6 +4,15 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+# Autoload .env if present (do not override variables already exported)
+try:
+    from dotenv import find_dotenv, load_dotenv  # type: ignore
+
+    load_dotenv(find_dotenv(usecwd=True), override=False)
+except Exception:
+    # Optional dependency; continue silently if unavailable or misconfigured
+    pass
+
 import typer
 import yaml  # type: ignore[import-untyped]
 
