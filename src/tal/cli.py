@@ -16,7 +16,7 @@ except Exception:
 import typer
 import yaml  # type: ignore[import-untyped]
 
-from tal import achievements
+from tal import achievements, achievements_badges
 from tal.agents.registry import load_agent_config, to_engine_config
 from tal.backtest.engine import _load_config
 from tal.live.wrapper import run_live_once, _build_alpaca_client_from_env
@@ -81,6 +81,51 @@ def achievements_reset(
         raise typer.Exit(code=1) from exc
     typer.echo("Achievements reset.")
 
+
+@achievements_app.command("badges")
+def achievements_badges_cmd(
+    stdout: bool = typer.Option(
+        False,
+        "--stdout",
+        help="Print the achievements badge markdown line to stdout.",
+    ),
+    readme: Path | None = typer.Option(
+        None,
+        "--readme",
+        help="Path to a README to update between badge markers.",
+    ),
+    style: achievements_badges.Style = typer.Option(
+        "flat-square",
+        "--style",
+        help="Shields.io badge style (flat, flat-square, for-the-badge).",
+    ),
+    label_case: achievements_badges.LabelCase = typer.Option(
+        "lower",
+        "--label-case",
+        help="Label casing: lower or title.",
+    ),
+) -> None:
+    """Generate achievements badge markdown or update a README."""
+
+    try:
+        badges_line = achievements_badges.render_badges_line(
+            style=style,
+            label_case=label_case,
+        )
+    except ValueError as exc:
+        typer.echo(f"[achievements] {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    emit_stdout = stdout or readme is None
+    if emit_stdout:
+        typer.echo(badges_line)
+
+    if readme is not None:
+        updated = achievements_badges.update_readme(readme, badges_line)
+        if updated:
+            typer.echo(f"[achievements] updated badges in {readme}")
+        else:
+            typer.echo(f"[achievements] README '{readme}' not found; skipped update.")
 
 @doctor_app.command("alpaca")
 def doctor_alpaca(

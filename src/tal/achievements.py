@@ -113,6 +113,15 @@ _NOTIONAL_THRESHOLDS = [1, 10, 69, 100, 420, 1000]
 _PROFIT_THRESHOLDS = [1, 10, 69, 100, 420, 1000]
 
 
+def get_thresholds() -> dict[str, list[float]]:
+    """Return the configured thresholds for achievements."""
+
+    return {
+        "notional": list(_NOTIONAL_THRESHOLDS),
+        "profit": list(_PROFIT_THRESHOLDS),
+    }
+
+
 def record_trade_notional(notional: float, mode: Mode) -> list[str]:
     """Record trade notional and return unlocked achievements."""
 
@@ -157,6 +166,16 @@ def list_achievements() -> dict[str, Any]:
     return _load_state()
 
 
+def is_unlocked(key: str) -> bool:
+    """Check if a badge key has already been unlocked."""
+
+    state = _load_state()
+    achievements = state.get("achievements", {})
+    if not isinstance(achievements, dict):
+        return False
+    return key in achievements
+
+
 def reset_achievements() -> None:
     """Wipe all tracked achievements and artifacts."""
 
@@ -181,7 +200,22 @@ def reset_achievements() -> None:
             directory.rmdir()
 
 
+def all_planned_badge_keys() -> list[str]:
+    """Return the canonical list of badge keys across modes."""
+
+    keys: list[str] = []
+    for mode in ("paper", "real"):
+        for threshold in _NOTIONAL_THRESHOLDS:
+            keys.append(_achievement_key("trade", threshold, mode))
+        for threshold in _PROFIT_THRESHOLDS:
+            keys.append(_achievement_key("profit", threshold, mode))
+    return keys
+
+
 __all__ = [
+    "all_planned_badge_keys",
+    "get_thresholds",
+    "is_unlocked",
     "list_achievements",
     "record_profit_dollars",
     "record_trade_notional",
