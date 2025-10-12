@@ -19,7 +19,7 @@ import yaml  # type: ignore[import-untyped]
 from tal import achievements, achievements_badges
 from tal.agents.registry import load_agent_config, to_engine_config
 from tal.backtest.engine import _load_config
-from tal.live.wrapper import run_live_once, _build_alpaca_client_from_env
+from tal.live.wrapper import _build_alpaca_client_from_env, _truthy, run_live_once
 from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 from tal.orchestrator.day_night import run_loop
 from tal.storage.db import fetch_metrics_for_runs, fetch_runs_since, get_engine
@@ -187,6 +187,17 @@ def doctor_alpaca(
     typer.echo(f"latest_price[{symbol_upper}]: {price}")
     if feed_hint:
         typer.echo(f"feed_hint: {feed_hint.lower()}")
+
+    gate_enabled = _truthy(os.environ.get("REAL_TRADING_ENABLED"))
+    typer.echo(f"real_trading_enabled: {gate_enabled}")
+    live_broker = os.environ.get("LIVE_BROKER", "alpaca_paper")
+    typer.echo(f"live_broker: {live_broker}")
+    broker_key = live_broker.strip().lower()
+    if broker_key == "alpaca_real" and not gate_enabled:
+        typer.secho(
+            "WARNING: real broker selected but REAL_TRADING_ENABLED is false/absent.",
+            fg="red",
+        )
 
 
 @agent_app.command("backtest")
@@ -371,9 +382,11 @@ def evaluate(
     pnl_dollars = max(0.0, pnl_pct_total * capital)
     execute_flag = os.getenv("LIVE_EXECUTE", "0").lower()
     execute_enabled = execute_flag in {"1", "true", "yes"}
-    broker_mode = os.getenv("LIVE_BROKER", "").lower()
+    broker_mode_raw = os.getenv("LIVE_BROKER", "")
+    broker_mode = broker_mode_raw.strip().lower()
+    is_real_broker = broker_mode in {"alpaca_real", "alpaca", "alpaca-live"}
     achievement_mode: Literal["paper", "real"] = (
-        "real" if broker_mode == "alpaca" and execute_enabled else "paper"
+        "real" if is_real_broker and execute_enabled else "paper"
     )
 
     fmt = output_format.lower()

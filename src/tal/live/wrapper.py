@@ -19,6 +19,19 @@ from tal.achievements import record_trade_notional
 from tal.storage.db import get_engine, record_order, record_run
 
 
+def _truthy(value: str | None) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _require_real_trading_unlock() -> None:
+    if not _truthy(os.environ.get("REAL_TRADING_ENABLED")):
+        raise RuntimeError(
+            "Real trading is locked. Set REAL_TRADING_ENABLED=true in your environment "
+            "to allow orders to be sent to a real broker. "
+            "Tip: keep LIVE_BROKER=alpaca_paper until you’re ready."
+        )
+
+
 class LiveCfg(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -115,6 +128,8 @@ def run_live_once(
     broker_kwargs: dict[str, Any]
     broker_client: AlpacaClient | None = None
     if live_cfg.adapter == "alpaca":
+        if not live_cfg.paper:
+            _require_real_trading_unlock()
         broker_kwargs = {
             "slippage_bps": live_cfg.slippage_bps,
             "max_order_usd": live_cfg.max_order_usd,
