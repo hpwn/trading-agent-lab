@@ -73,6 +73,8 @@ def doctor_alpaca(
         typer.echo(f"[doctor] failed to initialize Alpaca client: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
+    feed_hint = os.environ.get("ALPACA_FEED")
+
     try:
         market_open = bool(client.is_market_open())
         account = client.get_account() or {}
@@ -94,6 +96,8 @@ def doctor_alpaca(
     typer.echo(f"market_open: {market_open}")
     typer.echo(f"account: cash={cash} equity={equity} buying_power={buying_power}")
     typer.echo(f"latest_price[{symbol_upper}]: {price}")
+    if feed_hint:
+        typer.echo(f"feed_hint: {feed_hint.lower()}")
 
 
 @agent_app.command("backtest")

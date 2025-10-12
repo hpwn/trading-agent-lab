@@ -85,8 +85,9 @@ ALPACA_BASE_URL=https://paper-api.alpaca.markets
 ALPACA_DATA_URL=https://data.alpaca.markets
 ```
 
-- `ALPACA_BASE_URL` (optional) overrides the *trading* endpoint. The market data
-  client uses Alpaca's default host and is not overridden.
+- Trading and data use different hosts. Don't pass a trading URL to the data
+  client; the SDK defaults to `https://data.alpaca.markets`.
+- `ALPACA_BASE_URL` (optional) overrides the *trading* endpoint.
 
 ### Alpaca (paper) quickstart
 

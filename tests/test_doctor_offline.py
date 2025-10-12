@@ -18,6 +18,7 @@ class _FakeClient:
 def test_doctor_alpaca_happy_path(monkeypatch):
     monkeypatch.setenv("ALPACA_API_KEY_ID", "key")
     monkeypatch.setenv("ALPACA_API_SECRET_KEY", "secret")
+    monkeypatch.setenv("ALPACA_FEED", "iex")
 
     monkeypatch.setattr(
         "tal.cli._build_alpaca_client_from_env",
@@ -32,3 +33,4 @@ def test_doctor_alpaca_happy_path(monkeypatch):
     assert "market_open: True" in stdout
     assert "account: cash=1000.00 equity=1500.00 buying_power=1200.00" in stdout
     assert "latest_price[SPY]: 123.45" in stdout
+    assert "feed_hint: iex" in stdout
