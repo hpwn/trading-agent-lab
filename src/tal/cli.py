@@ -5,7 +5,7 @@ import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, SupportsFloat
+from typing import Any, Literal, Mapping, SupportsFloat
 
 # Autoload .env if present (do not override variables already exported)
 try:
@@ -26,6 +26,8 @@ from tal.live.wrapper import (
     LiveCfg,
     _build_alpaca_client_from_env,
     _truthy,
+    build_broker_and_price_fn,
+    flatten_symbol,
     run_live_loop,
     run_live_once,
 )
@@ -33,16 +35,22 @@ from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 from tal.orchestrator.day_night import run_loop
 from sqlalchemy import text
 
+from typer import Context, Option, Typer
+
 from tal.storage.db import fetch_metrics_for_runs, fetch_runs_since, get_engine
 
-app = typer.Typer(help="Trading Agent Lab (CLI only)")
-agent_app = typer.Typer(help="Agent-specific commands")
-league_app = typer.Typer(help="League manager: multi-agent live & nightly eval")
-doctor_app = typer.Typer(help="Runtime diagnostics")
-achievements_app = typer.Typer(help="Fun, optional trading achievements")
-orders_app = typer.Typer(help="Inspect recent orders")
-ledger_app = typer.Typer(help="Inspect live trade ledger entries")
-live_app = typer.Typer(help="Live trading helpers", invoke_without_command=True)
+app = Typer(help="Trading Agent Lab (CLI only)")
+agent_app = Typer(help="Agent-specific commands")
+league_app = Typer(help="League manager: multi-agent live & nightly eval")
+doctor_app = Typer(help="Runtime diagnostics")
+achievements_app = Typer(help="Fun, optional trading achievements")
+orders_app = Typer(help="Inspect recent orders")
+ledger_app = Typer(help="Inspect live trade ledger entries")
+live_app = Typer(
+    help="Live trading helpers",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
 app.add_typer(agent_app, name="agent")
 app.add_typer(league_app, name="league")
 app.add_typer(doctor_app, name="doctor")
@@ -76,7 +84,10 @@ def _resolve_live_achievement_mode(live_cfg: LiveCfg) -> Literal["paper", "real"
     return "real" if broker_name == "alpaca" and execute_enabled else "paper"
 
 
-def _record_live_profit_if_needed(value: Any, live_cfg: LiveCfg) -> None:
+def _maybe_record_live_profit(result: Mapping[str, Any] | None, live_cfg: LiveCfg) -> None:
+    if not result:
+        return
+    value = result.get("realized_pnl")
     if value is None:
         return
     profit_source = achievements.get_profit_source()
@@ -203,6 +214,11 @@ def achievements_badges_cmd(
         "--label-case",
         help="Label casing: lower or title.",
     ),
+    emojis: bool = Option(
+        False,
+        "--emojis/--no-emojis",
+        help="Append 🔓/🔒 markers to badge labels.",
+    ),
 ) -> None:
     """Generate achievements badge markdown or update a README."""
 
@@ -210,6 +226,7 @@ def achievements_badges_cmd(
         badges_line = achievements_badges.render_badges_line(
             style=style,
             label_case=label_case,
+            emojis=emojis,
         )
     except ValueError as exc:
         typer.echo(f"[achievements] {exc}", err=True)
@@ -485,27 +502,27 @@ def backtest(config: str = "config/base.yaml") -> None:
 
 @live_app.callback()
 def live_entrypoint(
-    ctx: typer.Context,
-    config: str = typer.Option(..., "--config", help="Path to engine config YAML."),
-    loop: bool = typer.Option(
+    ctx: Context,
+    config: str = Option(..., "--config", help="Path to engine config YAML."),
+    loop: bool = Option(
         False,
         "--loop/--no-loop",
         help="Run repeated live steps until max-steps is reached.",
         show_default=True,
     ),
-    interval: float = typer.Option(
+    interval: float = Option(
         5.0,
         "--interval",
         help="Seconds to sleep between live steps when looping.",
         show_default=True,
     ),
-    max_steps: int = typer.Option(
+    max_steps: int = Option(
         60,
         "--max-steps",
         help="Maximum live steps to run when looping.",
         show_default=True,
     ),
-    flat_at_end: bool = typer.Option(
+    flat_at_end: bool = Option(
         False,
         "--flat-at-end/--no-flat-at-end",
         help="Flatten any open position after the loop completes.",
@@ -529,8 +546,8 @@ def live_entrypoint(
         )
         typer.echo(json.dumps(res, indent=2))
         flatten = res.get("flatten")
-        if isinstance(flatten, dict):
-            _record_live_profit_if_needed(flatten.get("realized_pnl"), live_cfg)
+        if isinstance(flatten, Mapping):
+            _maybe_record_live_profit(flatten, live_cfg)
     else:
         res = run_live_once(cfg)
         typer.echo(json.dumps(res, indent=2))
@@ -538,17 +555,22 @@ def live_entrypoint(
 
 @live_app.command("close")
 def live_close(
-    config: str = typer.Option(..., "--config", help="Path to engine config YAML."),
+    config: str = Option(..., "--config", help="Path to engine config YAML."),
 ) -> None:
     """Flatten the configured symbol position for the target broker."""
 
     cfg = _load_engine_config(config)
-    live_cfg = LiveCfg(**cfg.get("live", {}))
-    res = run_live_loop(cfg, max_steps=0, interval=0.0, flat_at_end=True)
-    flatten = res.get("flatten")
-    typer.echo(json.dumps(flatten or {}, indent=2))
-    if isinstance(flatten, dict):
-        _record_live_profit_if_needed(flatten.get("realized_pnl"), live_cfg)
+    broker, price_fn, context = build_broker_and_price_fn(cfg)
+    symbol = context.symbols[0] if context.symbols else (context.live_cfg.symbol or "SPY")
+    flatten = flatten_symbol(
+        broker,
+        symbol,
+        price_fn,
+        context=context,
+        trades_path=context.trades_path,
+    )
+    typer.echo(json.dumps(flatten, indent=2))
+    _maybe_record_live_profit(flatten, context.live_cfg)
 
 
 @app.command(name="eval")

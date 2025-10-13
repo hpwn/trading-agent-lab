@@ -183,7 +183,8 @@ Unlock playful milestones as you trade—purely cosmetic but great for morale.
 - Profit source is configurable via `ACHIEVEMENTS_PROFIT_SOURCE={eval|live|both}`
   (default `eval`). Select `live` or `both` to unlock profit badges from
   realized simulator/paper PnL (e.g., after a loop flatten).
-- Badge labels now end with `🔓` (unlocked) or `🔒` (locked) for quicker scanning.
+- Pass `--emojis` to `tal achievements badges` to append `🔓`/`🔒` markers to labels
+  without changing the legacy defaults.
 
 <!-- ACHIEVEMENTS:START -->
 <!-- ACHIEVEMENTS:END -->

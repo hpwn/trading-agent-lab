@@ -43,6 +43,7 @@ def test_render_badges_line_reflects_unlocks(monkeypatch, badge_setup):
 
     line = achievements_badges.render_badges_line(style="flat", label_case="title")
     assert "![Paper $1 Trade]" in line
+    assert "🔓" not in line and "🔒" not in line
     assert "-unlocked-success?style=flat" in line
     assert "-locked-lightgrey?style=flat" in line
 

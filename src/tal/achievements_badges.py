@@ -53,31 +53,56 @@ def _build_label(mode: str, threshold: str, kind: str, label_case: LabelCase) ->
     return _apply_label_case(label, label_case)
 
 
-def _badge_markdown(key: str, *, style: Style, label_case: LabelCase) -> str:
+def _url(label: str, status: str, color: str, *, style: Style) -> str:
+    encoded_label = quote(label, safe="")
+    return (
+        "https://img.shields.io/badge/"
+        f"{encoded_label}-{status}-{color}?style={style}"
+    )
+
+
+def _badge_markdown(
+    key: str,
+    *,
+    style: Style,
+    label_case: LabelCase,
+    emojis: bool,
+) -> str:
     mode, threshold, kind = _parse_badge_key(key)
     label = _build_label(mode, threshold, kind, label_case)
     unlocked = achievements.is_unlocked(key)
     status = "unlocked" if unlocked else "locked"
     color = "success" if unlocked else "lightgrey"
-    emoji = "🔓" if unlocked else "🔒"
-    label_with_emoji = f"{label} {emoji}"
-    encoded_label = quote(label_with_emoji, safe="")
-    url = (
-        "https://img.shields.io/badge/"
-        f"{encoded_label}-{status}-{color}?style={style}"
-    )
+
+    def _label(base: str) -> str:
+        if emojis:
+            suffix = "🔓" if unlocked else "🔒"
+            return f"{base} {suffix}"
+        return base
+
+    label_with_suffix = _label(label)
     alt_text = (
-        label_with_emoji.title() if label_case == "lower" else label_with_emoji
+        label_with_suffix.title() if label_case == "lower" else label_with_suffix
     )
-    return f"![{alt_text}]({url})"
+    return f"![{alt_text}]({ _url(label_with_suffix, status, color, style=style) })"
 
 
-def render_badges_line(*, style: Style = "flat-square", label_case: LabelCase = "lower") -> str:
+def render_badges_line(
+    *,
+    style: Style = "flat-square",
+    label_case: LabelCase = "lower",
+    emojis: bool = False,
+) -> str:
     """Render all planned badges as a single Markdown line."""
 
     validated_style = _validate_style(style)
     badges = [
-        _badge_markdown(key, style=validated_style, label_case=label_case)
+        _badge_markdown(
+            key,
+            style=validated_style,
+            label_case=label_case,
+            emojis=emojis,
+        )
         for key in achievements.all_planned_badge_keys()
     ]
     return " ".join(badges)

@@ -316,6 +316,27 @@ def _make_price_fn(
     return _price
 
 
+def build_broker_and_price_fn(
+    engine_cfg: dict[str, Any],
+    *,
+    price_map: Mapping[str, Sequence[float] | Series] | None = None,
+    alpaca_client: AlpacaClient | None = None,
+) -> tuple[Broker, Callable[[str], float], _RuntimeContext]:
+    """Construct a broker and price function for the given engine config."""
+
+    context = _prepare_runtime_context(engine_cfg)
+    broker, _ = _build_broker_for_context(context, alpaca_client=alpaca_client)
+    last_prices: dict[str, float] = {}
+    if price_map is not None:
+        for symbol, values in price_map.items():
+            if isinstance(values, Series) and not values.empty:
+                last_prices[str(symbol)] = float(values.iloc[-1])
+            elif isinstance(values, Sequence) and not isinstance(values, (str, bytes)) and values:
+                last_prices[str(symbol)] = float(values[-1])
+    price_fn = _make_price_fn(broker, context, last_prices)
+    return broker, price_fn, context
+
+
 def _execute_step(
     context: _RuntimeContext,
     broker: Broker,
@@ -490,43 +511,45 @@ def flatten_symbol(
 ) -> dict[str, Any]:
     """Flatten a symbol position for the provided broker."""
 
-    ledger_qty = 0.0
-    avg_cost = 0.0
     current_pos = float(br.position(symbol))
     exec_hint = float(price_fn(symbol))
 
-    if context is not None and trades_path is not None:
-        ledger_qty, avg_cost = _compute_open_position_from_ledger(trades_path, symbol)
+    if (
+        abs(current_pos) <= 1e-9
+        and context is not None
+        and trades_path is not None
+    ):
+        ledger_qty, _ = _compute_open_position_from_ledger(trades_path, symbol)
+        if abs(ledger_qty) > 1e-9:
+            current_pos = ledger_qty
 
-    if abs(current_pos) <= 1e-9 and abs(ledger_qty) > 0:
-        current_pos = ledger_qty
-        if hasattr(br, "_pos") and isinstance(getattr(br, "_pos"), dict):  # pragma: no cover - sim specific
-            getattr(br, "_pos")[symbol] = ledger_qty
-
-    qty = abs(current_pos)
-    if qty <= 0:
+    if abs(current_pos) <= 1e-9:
         return {
             "symbol": symbol,
             "qty": 0.0,
             "exec_px": exec_hint,
-            "realized_pnl": None,
+            "realized_pnl": 0.0,
+            "status": "flat",
         }
 
     side = "sell" if current_pos > 0 else "buy"
-    fill = br.submit(Order(symbol, side, qty=float(qty), ref_price=exec_hint))
+    order_qty = float(abs(current_pos))
+    fill = br.submit(Order(symbol, side, qty=order_qty, ref_price=exec_hint))
+    exec_px = float(getattr(fill, "price", exec_hint))
+    status = getattr(fill, "status", "filled")
 
     realized: float | None = None
     if (
         context is not None
         and trades_path is not None
         and context.live_cfg.adapter == "sim"
-        and abs(ledger_qty) >= qty
-        and avg_cost
     ):
-        if current_pos > 0:
-            realized = (float(fill.price) - avg_cost) * qty
-        else:
-            realized = (avg_cost - float(fill.price)) * qty
+        realized = _compute_sim_flatten_pnl(
+            trades_path,
+            symbol,
+            exit_px=exec_px,
+            qty=current_pos,
+        )
 
     if context is not None and trades_path is not None:
         record_run_id = run_id or context.engine_cfg.get("run_id") or str(uuid.uuid4())
@@ -536,9 +559,33 @@ def flatten_symbol(
         "symbol": symbol,
         "qty": float(fill.qty),
         "side": fill.side,
-        "exec_px": float(fill.price),
+        "exec_px": exec_px,
         "realized_pnl": realized,
+        "status": status,
     }
+
+
+def _compute_sim_flatten_pnl(
+    trades_path: Path,
+    symbol: str,
+    *,
+    exit_px: float,
+    qty: float,
+) -> float:
+    if not trades_path.exists():
+        return 0.0
+
+    open_qty, avg_cost = _compute_open_position_from_ledger(trades_path, symbol)
+    if abs(open_qty) <= 1e-9:
+        return 0.0
+
+    effective_qty = min(abs(open_qty), abs(qty))
+    if effective_qty <= 0:
+        return 0.0
+
+    if open_qty > 0:
+        return (exit_px - avg_cost) * effective_qty
+    return (avg_cost - exit_px) * effective_qty
 
 
 
