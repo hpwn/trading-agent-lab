@@ -25,6 +25,19 @@ def _truthy(value: str | None) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _resolve_module(name: str) -> Any:
+    """Load a module while honoring pre-stubbed entries in ``sys.modules``."""
+
+    mod = sys.modules.get(name)
+    if mod is not None:
+        return mod
+    return importlib.import_module(name)
+
+
+def _safe_getattr(obj: Any, attr: str, default: Any = None) -> Any:
+    return getattr(obj, attr, default)
+
+
 def _require_real_trading_unlock() -> None:
     if not _truthy(os.environ.get("REAL_TRADING_ENABLED")):
         raise RuntimeError(
@@ -607,30 +620,48 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
         data_env=data_env,
     )
     try:
-        from alpaca.common.exceptions import APIError
-        from alpaca.data.historical import StockHistoricalDataClient
-        from alpaca.data.requests import StockLatestTradeRequest
-        from alpaca.trading.client import TradingClient
-        from alpaca.trading.enums import OrderSide, TimeInForce
-        from alpaca.trading import requests as alpaca_requests
+        mod_common_exc = _resolve_module("alpaca.common.exceptions")
+        mod_trading_client = _resolve_module("alpaca.trading.client")
+        mod_data_hist = _resolve_module("alpaca.data.historical")
+        mod_data_req = _resolve_module("alpaca.data.requests")
+        mod_trading_enums = _resolve_module("alpaca.trading.enums")
+        mod_trading_requests = _resolve_module("alpaca.trading.requests")
     except Exception as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("alpaca extra not installed. Install with `pip install -e '.[alpaca]'`") from exc
 
-    def _make_alpaca_order_request(kind: Literal["market", "limit"], **kwargs: Any) -> Any:
-        """Construct an Alpaca order request without rebinding request classes."""
+    APIError = _safe_getattr(mod_common_exc, "APIError", RuntimeError)
+    TradingClient = _safe_getattr(mod_trading_client, "TradingClient")
+    StockHistoricalDataClient = _safe_getattr(mod_data_hist, "StockHistoricalDataClient")
+    StockLatestTradeRequest = _safe_getattr(mod_data_req, "StockLatestTradeRequest")
+    OrderSide = _safe_getattr(mod_trading_enums, "OrderSide")
+    TimeInForce = _safe_getattr(mod_trading_enums, "TimeInForce")
+    MarketOrderRequest = _safe_getattr(mod_trading_requests, "MarketOrderRequest")
 
-        if kind == "limit":
-            request_cls: type[Any] = getattr(
-                alpaca_requests,
-                "LimitOrderRequest",
-                alpaca_requests.MarketOrderRequest,
-            )
-        else:
-            request_cls = alpaca_requests.MarketOrderRequest
-        return request_cls(**kwargs)
+    required: dict[str, Any] = {
+        "TradingClient": TradingClient,
+        "StockHistoricalDataClient": StockHistoricalDataClient,
+        "StockLatestTradeRequest": StockLatestTradeRequest,
+        "OrderSide": OrderSide,
+        "TimeInForce": TimeInForce,
+        "MarketOrderRequest": MarketOrderRequest,
+    }
+    missing = [name for name, value in required.items() if value is None]
+    if missing:
+        joined = ", ".join(missing)
+        raise RuntimeError(f"alpaca client pieces unavailable (missing: {joined})")
 
     class _RuntimeAlpacaClient:
         def __init__(self) -> None:
+            self._APIError = APIError
+            self._OrderSide = OrderSide
+            self._TimeInForce = TimeInForce
+            self._MarketOrderRequest = MarketOrderRequest
+            self._LimitOrderRequest = _safe_getattr(
+                mod_trading_requests,
+                "LimitOrderRequest",
+                None,
+            )
+            self._StockLatestTradeRequest = StockLatestTradeRequest
             trading_kwargs: dict[str, Any] = {"paper": paper}
             if trading_env:
                 trading_kwargs["url_override"] = trading_url
@@ -643,7 +674,7 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
             self._data = StockHistoricalDataClient(api_key, api_secret, **data_kwargs)
 
         def get_last_price(self, symbol: str) -> float:
-            req = StockLatestTradeRequest(symbol_or_symbols=symbol)
+            req = self._StockLatestTradeRequest(symbol_or_symbols=symbol)
             latest = self._data.get_stock_latest_trade(req)
             trade = latest[symbol] if isinstance(latest, dict) else latest
             return float(trade.price)
@@ -669,7 +700,7 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
         def get_position(self, symbol: str) -> float:
             try:
                 pos = self._trading.get_open_position(symbol)
-            except APIError:
+            except self._APIError:
                 return 0.0
             except Exception:
                 return 0.0
@@ -678,6 +709,15 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
                 return float(qty)
             except (TypeError, ValueError):
                 return float(getattr(pos, "qty_available", 0.0))
+
+        def _pick_request_cls(self, kind: Literal["market", "limit"]) -> Any:
+            if kind == "limit":
+                cls = self._LimitOrderRequest or self._MarketOrderRequest
+            else:
+                cls = self._MarketOrderRequest
+            if cls is None:
+                raise RuntimeError("Alpaca request class unavailable")
+            return cls
 
         def submit_order(
             self,
@@ -690,8 +730,8 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
             limit_price: Optional[float] = None,
             extended_hours: Optional[bool] = None,
         ) -> dict:
-            order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
-            tif_enum = TimeInForce.DAY if time_in_force.lower() == "day" else TimeInForce.DAY
+            order_side = self._OrderSide.BUY if side.lower() == "buy" else self._OrderSide.SELL
+            tif_enum = self._TimeInForce.DAY if time_in_force.lower() == "day" else self._TimeInForce.DAY
             request_kwargs: dict[str, Any] = {
                 "symbol": symbol,
                 "qty": qty,
@@ -704,15 +744,11 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
                 if limit_price is None:
                     raise ValueError("limit orders require limit_price")
                 request_kwargs["limit_price"] = float(limit_price)
-                request_cls = getattr(
-                    alpaca_requests,
-                    "LimitOrderRequest",
-                    alpaca_requests.MarketOrderRequest,
-                )
                 request_kind: Literal["market", "limit"] = "limit"
             else:
-                request_cls = alpaca_requests.MarketOrderRequest
                 request_kind = "market"
+
+            request_cls = self._pick_request_cls(request_kind)
 
             if (
                 extended_hours is not None
@@ -720,9 +756,7 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
             ):
                 request_kwargs["extended_hours"] = bool(extended_hours)
 
-            order = self._trading.submit_order(
-                order_data=_make_alpaca_order_request(request_kind, **request_kwargs),
-            )
+            order = self._trading.submit_order(order_data=request_cls(**request_kwargs))
             if hasattr(order, "model_dump") and callable(order.model_dump):
                 return order.model_dump()
             if hasattr(order, "dict") and callable(order.dict):
