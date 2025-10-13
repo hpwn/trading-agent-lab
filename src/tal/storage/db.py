@@ -86,12 +86,16 @@ class Engine:
     def sa(self) -> SAEngine:
         return self._engine
 
-    def query(self, sql: str, params: Mapping[str, object] | None = None):
+    def query(
+        self, sql: str, params: Mapping[str, object] | None = None
+    ) -> list[Any]:
         with self._engine.connect() as conn:
             result = conn.execute(text(sql), params or {})
-            return result.fetchall()
+            return list(result.fetchall())
 
-    def query_dicts(self, sql: str, params: Mapping[str, object] | None = None) -> list[dict]:
+    def query_dicts(
+        self, sql: str, params: Mapping[str, object] | None = None
+    ) -> list[dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = conn.execute(text(sql), params or {}).mappings()
             return [dict(row) for row in rows]

@@ -13,6 +13,12 @@ tal backtest --config config/base.yaml
 tal orchestrate --config config/base.yaml
 ```
 
+## Dev setup
+
+- Install tooling: `pip install -e ".[dev]"`
+- Type check: `mypy src`
+- Lint: `ruff check .`
+
 ## Running multiple agents
 
 The CLI exposes agent-aware commands that load an `AgentSpec` and run the
@@ -63,6 +69,20 @@ pip install -e ".[alpaca]"
 ```
 
 Tests and CI only exercise the simulator—no network calls are made.
+
+### Real-mode safety lock
+
+Even if you set `LIVE_BROKER=alpaca_real`, the lab refuses to send real orders
+unless you also set `REAL_TRADING_ENABLED=true`. This environment flag must be
+deliberately enabled before any real broker session can start.
+
+Use `tal doctor alpaca` to confirm your setup:
+
+- `live_broker: alpaca_real`
+- `real_trading_enabled: True`
+
+Leave `REAL_TRADING_ENABLED` unset during day-to-day development to keep the
+paper/simulator paths safe by default.
 
 ## Configuration
 

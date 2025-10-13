@@ -3,20 +3,33 @@ from __future__ import annotations
 import importlib
 import math
 import os
+import sys
 import uuid
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
-from collections.abc import Mapping
-import sys
+from typing import Any, Literal, cast
 
-import pandas as pd
+from pandas import Series
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from .adapters import AlpacaClient, SimMarketData, build_broker
 from .base import Fill, Order
 from tal.achievements import record_trade_notional
 from tal.storage.db import get_engine, record_order, record_run
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _require_real_trading_unlock() -> None:
+    if not _truthy(os.environ.get("REAL_TRADING_ENABLED")):
+        raise RuntimeError(
+            "Real trading is locked. Set REAL_TRADING_ENABLED=true in your environment "
+            "to allow orders to be sent to a real broker. "
+            "Tip: keep LIVE_BROKER=alpaca_paper until you’re ready."
+        )
 
 
 class LiveCfg(BaseModel):
@@ -59,7 +72,7 @@ def _append_trade(trades_path: Path, fill: Fill, *, ts: datetime) -> None:
         handle.write(f"{epoch},{fill.symbol},{fill.side},{fill.qty},{fill.price}\n")
 
 
-def _load_strategy(strategy_name: str):
+def _load_strategy(strategy_name: str) -> type[Any]:
     if strategy_name == "rsi_mean_rev":
         mod = importlib.import_module("tal.strategies.rsi_mean_rev")
         return mod.RSIMeanReversion
@@ -80,8 +93,8 @@ def _select_alpaca_urls(
 
 
 def run_live_once(
-    engine_cfg: dict,
-    price_map: dict[str, list[float]] | None = None,
+    engine_cfg: dict[str, Any],
+    price_map: Mapping[str, Sequence[float] | Series] | None = None,
     *,
     alpaca_client: AlpacaClient | None = None,
 ) -> dict[str, Any]:
@@ -102,19 +115,27 @@ def run_live_once(
     if not symbols:
         symbols = ["SPY"]
     bars = max(1, int(live_cfg.bars))
-    history_map: dict[str, list[float] | pd.Series] = {}
+    history_map: dict[str, list[float]] = {}
     for symbol in symbols:
-        prices = None
+        prices: Sequence[float] | Series | None = None
         if price_map is not None:
             prices = price_map.get(symbol)
         if prices is None:
-            prices = [100.0] * bars
-        history_map[symbol] = prices
+            price_values = [100.0] * bars
+        elif isinstance(prices, Series):
+            price_values = [float(p) for p in prices.tolist()]
+        else:
+            price_values = [float(p) for p in list(prices)[:bars]]
+            if len(price_values) < bars:
+                price_values = (price_values + [price_values[-1]] * (bars - len(price_values))) if price_values else [100.0] * bars
+        history_map[symbol] = price_values
     md = SimMarketData(history_map)
 
     broker_kwargs: dict[str, Any]
     broker_client: AlpacaClient | None = None
     if live_cfg.adapter == "alpaca":
+        if not live_cfg.paper:
+            _require_real_trading_unlock()
         broker_kwargs = {
             "slippage_bps": live_cfg.slippage_bps,
             "max_order_usd": live_cfg.max_order_usd,
@@ -147,8 +168,11 @@ def run_live_once(
     last_sig = int(sig_series.iloc[-1]) if not sig_series.empty else 0
 
     px = md.latest_price(sym)
-    if live_cfg.adapter == "alpaca":
-        px = br.price(sym)  # type: ignore[attr-defined]
+    if live_cfg.adapter == "alpaca" and hasattr(br, "price"):
+        price_fn = getattr(br, "price")
+        if callable(price_fn):
+            price_callable = cast(Callable[[str], float], price_fn)
+            px = float(price_callable(sym))
     current_pos = br.position(sym)
     equity = br.cash() + current_pos * px
     cap = equity * (live_cfg.max_position_pct / 100.0)
@@ -257,12 +281,12 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
         data_env=data_env,
     )
     try:
-        from alpaca.common.exceptions import APIError  # type: ignore
-        from alpaca.data.historical import StockHistoricalDataClient  # type: ignore
-        from alpaca.data.requests import StockLatestTradeRequest  # type: ignore
-        from alpaca.trading.client import TradingClient  # type: ignore
-        from alpaca.trading.enums import OrderSide, TimeInForce  # type: ignore
-        from alpaca.trading.requests import MarketOrderRequest  # type: ignore
+        from alpaca.common.exceptions import APIError
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockLatestTradeRequest
+        from alpaca.trading.client import TradingClient
+        from alpaca.trading.enums import OrderSide, TimeInForce
+        from alpaca.trading.requests import MarketOrderRequest
     except Exception as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("alpaca extra not installed. Install with `pip install -e '.[alpaca]'`") from exc
 

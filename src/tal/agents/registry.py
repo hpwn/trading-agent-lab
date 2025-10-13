@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import Match
 
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 from .spec import AgentSpec
 
@@ -12,8 +13,8 @@ _VAR = re.compile(r"\$\{([^}]+)\}")
 
 
 def _expand_env(text: str) -> str:
-    def repl(m):
-        return os.environ.get(m.group(1), "")
+    def repl(match: Match[str]) -> str:
+        return os.environ.get(match.group(1), "")
 
     return _VAR.sub(repl, text)
 

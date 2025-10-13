@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from ..base import Broker
 from .alpaca import AlpacaBroker, AlpacaClient
 from .sim import SimBroker, SimMarketData
@@ -9,7 +11,7 @@ def build_broker(
     adapter: str,
     *,
     client: AlpacaClient | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> Broker:
     if adapter == "sim":
         return SimBroker(**kwargs)

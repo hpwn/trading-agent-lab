@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import json
 import math
@@ -6,9 +8,11 @@ import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 import yfinance as yf
+import yaml
 
 from tal.evaluation.metrics import compute_kpis
 from tal.storage.db import get_engine, record_run
@@ -65,9 +69,7 @@ def _safe_metric_value(value: object) -> float | None:
 DEFAULT_CONFIG_PATH = Path("config/base.yaml")
 
 
-def load_config(config_path: str):
-    import yaml  # type: ignore[import-untyped]
-
+def load_config(config_path: str) -> tuple[dict[str, Any], str]:
     _load_env()
     requested_path = Path(config_path)
     override = os.environ.get("TAL_ACTIVE_CONFIG")
@@ -77,12 +79,15 @@ def load_config(config_path: str):
     expanded = raw
     for k, v in os.environ.items():
         expanded = expanded.replace("${" + k + "}", v)
-    cfg = yaml.safe_load(expanded)
+    cfg_raw = yaml.safe_load(expanded)
+    if not isinstance(cfg_raw, dict):
+        raise TypeError("Config must decode to a mapping.")
+    cfg = cast(dict[str, Any], cfg_raw)
     os.environ["TAL_ACTIVE_CONFIG"] = str(requested_path.resolve())
     return cfg, expanded
 
 
-def _load_config(config_path: str) -> dict:
+def _load_config(config_path: str) -> dict[str, Any]:
     """Load a config file and return the parsed dictionary only."""
 
     cfg, _ = load_config(config_path)
@@ -104,7 +109,7 @@ def _current_commit_sha() -> str | None:
     return None
 
 
-def run_backtest(config_path: str):
+def run_backtest(config_path: str) -> None:
     cfg, expanded_config = load_config(config_path)
     run_id = os.environ.get("RUN_ID", str(uuid.uuid4()))
     strategy_cfg = cfg.get("strategy", {})
