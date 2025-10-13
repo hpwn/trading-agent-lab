@@ -612,13 +612,22 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
         from alpaca.data.requests import StockLatestTradeRequest
         from alpaca.trading.client import TradingClient
         from alpaca.trading.enums import OrderSide, TimeInForce
-        from alpaca.trading.requests import MarketOrderRequest
-        try:
-            from alpaca.trading.requests import LimitOrderRequest
-        except Exception:
-            LimitOrderRequest = MarketOrderRequest
+        from alpaca.trading import requests as alpaca_requests
     except Exception as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("alpaca extra not installed. Install with `pip install -e '.[alpaca]'`") from exc
+
+    def _make_alpaca_order_request(kind: Literal["market", "limit"], **kwargs: Any) -> Any:
+        """Construct an Alpaca order request without rebinding request classes."""
+
+        if kind == "limit":
+            request_cls: type[Any] = getattr(
+                alpaca_requests,
+                "LimitOrderRequest",
+                alpaca_requests.MarketOrderRequest,
+            )
+        else:
+            request_cls = alpaca_requests.MarketOrderRequest
+        return request_cls(**kwargs)
 
     class _RuntimeAlpacaClient:
         def __init__(self) -> None:
@@ -695,20 +704,25 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
                 if limit_price is None:
                     raise ValueError("limit orders require limit_price")
                 request_kwargs["limit_price"] = float(limit_price)
-                if (
-                    extended_hours is not None
-                    and "extended_hours" in getattr(LimitOrderRequest, "model_fields", {})
-                ):
-                    request_kwargs["extended_hours"] = bool(extended_hours)
-                request = LimitOrderRequest(**request_kwargs)
+                request_cls = getattr(
+                    alpaca_requests,
+                    "LimitOrderRequest",
+                    alpaca_requests.MarketOrderRequest,
+                )
+                request_kind: Literal["market", "limit"] = "limit"
             else:
-                if (
-                    extended_hours is not None
-                    and "extended_hours" in getattr(MarketOrderRequest, "model_fields", {})
-                ):
-                    request_kwargs["extended_hours"] = bool(extended_hours)
-                request = MarketOrderRequest(**request_kwargs)
-            order = self._trading.submit_order(order_data=request)
+                request_cls = alpaca_requests.MarketOrderRequest
+                request_kind = "market"
+
+            if (
+                extended_hours is not None
+                and "extended_hours" in getattr(request_cls, "model_fields", {})
+            ):
+                request_kwargs["extended_hours"] = bool(extended_hours)
+
+            order = self._trading.submit_order(
+                order_data=_make_alpaca_order_request(request_kind, **request_kwargs),
+            )
             if hasattr(order, "model_dump") and callable(order.model_dump):
                 return order.model_dump()
             if hasattr(order, "dict") and callable(order.dict):
