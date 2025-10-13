@@ -16,7 +16,15 @@ class AlpacaClient(Protocol):
 
     def get_position(self, symbol: str) -> float: ...
 
-    def submit_order(self, symbol: str, side: str, qty: float, type: str) -> dict: ...
+    def submit_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        type: str,
+        *,
+        extended_hours: bool = False,
+    ) -> dict: ...
 
 
 class AlpacaBroker(Broker):
@@ -29,12 +37,16 @@ class AlpacaBroker(Broker):
         max_order_usd: float | None = None,
         max_position_pct: float | None = None,
         max_daily_loss_pct: float | None = None,
+        allow_after_hours: bool = False,
+        paper: bool = True,
     ) -> None:
         self.client = client
         self.slippage_bps = float(slippage_bps)
         self.max_order_usd = max_order_usd
         self.max_position_pct = max_position_pct
         self.max_daily_loss_pct = max_daily_loss_pct
+        self.allow_after_hours = bool(allow_after_hours)
+        self.paper = bool(paper)
         self._known_symbols: set[str] = set()
 
     # Broker interface -------------------------------------------------
@@ -58,7 +70,20 @@ class AlpacaBroker(Broker):
         self._guardrails(symbol, side, qty, px)
         slip = px * (self.slippage_bps / 1e4)
         exec_px = px + slip if side == "buy" else px - slip
-        raw_order = self.client.submit_order(symbol=symbol, side=side, qty=qty, type=order.type)
+        extended_hours = self.allow_after_hours and self.paper
+        submit_kwargs = {
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "type": order.type,
+        }
+        if extended_hours:
+            submit_kwargs["extended_hours"] = True
+        try:
+            raw_order = self.client.submit_order(**submit_kwargs)
+        except TypeError:
+            submit_kwargs.pop("extended_hours", None)
+            raw_order = self.client.submit_order(**submit_kwargs)
         self._known_symbols.add(symbol)
         broker_order_id = None
         status = "submitted"
@@ -91,7 +116,7 @@ class AlpacaBroker(Broker):
 
     # Helpers ----------------------------------------------------------
     def _guardrails(self, symbol: str, side: str, qty: float, px: float) -> None:
-        if not self.is_market_open():
+        if not self.is_market_open() and not self.allow_after_hours:
             raise ValueError("Market is closed")
         notional = qty * px
         if self.max_order_usd is not None and notional > self.max_order_usd:

@@ -49,6 +49,7 @@ class LiveCfg(BaseModel):
     base_url: str | None = None
     symbol: str | None = None
     size_pct: float | None = None
+    allow_after_hours: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -141,6 +142,8 @@ def run_live_once(
             "max_order_usd": live_cfg.max_order_usd,
             "max_position_pct": live_cfg.max_position_pct,
             "max_daily_loss_pct": live_cfg.max_daily_loss_pct,
+            "allow_after_hours": live_cfg.allow_after_hours,
+            "paper": live_cfg.paper,
         }
         broker_client = alpaca_client or _build_alpaca_client_from_env(
             paper=live_cfg.paper,
@@ -340,7 +343,15 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
             except (TypeError, ValueError):
                 return float(getattr(pos, "qty_available", 0.0))
 
-        def submit_order(self, symbol: str, side: str, qty: float, type: str) -> dict:
+        def submit_order(
+            self,
+            symbol: str,
+            side: str,
+            qty: float,
+            type: str,
+            *,
+            extended_hours: bool = False,
+        ) -> dict:
             if type.lower() != "market":
                 raise ValueError("Only market orders are supported in AlpacaBroker")
             order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
@@ -349,6 +360,7 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
                 qty=qty,
                 side=order_side,
                 time_in_force=TimeInForce.DAY,
+                extended_hours=extended_hours or None,
             )
             order = self._trading.submit_order(order_data=request)
             if hasattr(order, "model_dump") and callable(order.model_dump):

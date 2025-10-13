@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, SupportsFloat
 
@@ -24,6 +25,8 @@ from tal.backtest.engine import _load_config
 from tal.live.wrapper import _build_alpaca_client_from_env, _truthy, run_live_once
 from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 from tal.orchestrator.day_night import run_loop
+from sqlalchemy import text
+
 from tal.storage.db import fetch_metrics_for_runs, fetch_runs_since, get_engine
 
 app = typer.Typer(help="Trading Agent Lab (CLI only)")
@@ -31,10 +34,14 @@ agent_app = typer.Typer(help="Agent-specific commands")
 league_app = typer.Typer(help="League manager: multi-agent live & nightly eval")
 doctor_app = typer.Typer(help="Runtime diagnostics")
 achievements_app = typer.Typer(help="Fun, optional trading achievements")
+orders_app = typer.Typer(help="Inspect recent orders")
+ledger_app = typer.Typer(help="Inspect live trade ledger entries")
 app.add_typer(agent_app, name="agent")
 app.add_typer(league_app, name="league")
 app.add_typer(doctor_app, name="doctor")
 app.add_typer(achievements_app, name="achievements")
+app.add_typer(orders_app, name="orders")
+app.add_typer(ledger_app, name="ledger")
 
 
 def _fmt_float(value: Any) -> str:
@@ -61,6 +68,44 @@ def achievements_ls() -> None:
                 entries.append(entry)
     entries.sort(key=lambda item: str(item.get("ts", "")))
     typer.echo(json.dumps(entries, indent=2, sort_keys=True))
+
+
+@achievements_app.command("status")
+def achievements_status() -> None:
+    """Summarize unlocked achievements and upcoming milestones."""
+
+    try:
+        state = achievements.list_achievements()
+    except Exception as exc:  # pragma: no cover - unexpected filesystem issues
+        typer.echo(f"[achievements] failed to load state: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    raw_entries = state.get("achievements", {})
+    entries: list[dict[str, Any]] = []
+    if isinstance(raw_entries, dict):
+        for entry in raw_entries.values():
+            if isinstance(entry, dict):
+                entries.append(entry)
+    entries.sort(key=lambda item: str(item.get("ts", "")))
+
+    if entries:
+        typer.echo("Unlocked achievements:")
+        for entry in entries:
+            key = entry.get("key", "?")
+            ts = entry.get("ts", "?")
+            typer.echo(f"- {key} @ {ts}")
+    else:
+        typer.echo("Unlocked achievements: none yet.")
+
+    next_map = achievements.next_thresholds(state)
+    source_labels = {"notional": "live", "profit": "eval"}
+    typer.echo("Next thresholds:")
+    for track in ("notional", "profit"):
+        track_info = next_map.get(track, {})
+        paper_val = achievements.format_threshold(track_info.get("paper"))
+        real_val = achievements.format_threshold(track_info.get("real"))
+        source = source_labels.get(track, "?")
+        typer.echo(f"- {track} [{source}]: paper -> {paper_val}, real -> {real_val}")
 
 
 @achievements_app.command("reset")
@@ -129,6 +174,105 @@ def achievements_badges_cmd(
         else:
             typer.echo(f"[achievements] README '{readme}' not found; skipped update.")
 
+
+@orders_app.command("tail")
+def orders_tail(
+    limit: int = typer.Option(20, "--limit", min=1, help="Number of rows to show."),
+    db: str = typer.Option(
+        "sqlite:///./lab.db",
+        "--db",
+        help="SQLite database URL (defaults to ./lab.db).",
+    ),
+) -> None:
+    """Show the most recent recorded orders."""
+
+    try:
+        engine = get_engine(db)
+    except Exception as exc:  # pragma: no cover - depends on runtime environment
+        typer.echo(f"[orders] failed to open database: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    query = (
+        "SELECT rowid AS rowid, ts, broker, symbol, side, qty, price, status "
+        "FROM orders ORDER BY rowid DESC LIMIT :limit"
+    )
+    try:
+        with engine.connect() as conn:
+            rows = list(conn.execute(text(query), {"limit": int(limit)}).mappings())
+    except Exception as exc:  # pragma: no cover - DB runtime issues
+        typer.echo(f"[orders] query failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if not rows:
+        typer.echo("No orders recorded yet.")
+        return
+
+    header = "rowid  ts                        broker   symbol side qty    price   status"
+    typer.echo(header)
+    for row in rows:
+        ts = str(row.get("ts", ""))[:24]
+        broker = str(row.get("broker", ""))
+        symbol = str(row.get("symbol", ""))
+        side = str(row.get("side", ""))
+        qty = _fmt_float(row.get("qty"))
+        price = _fmt_float(row.get("price"))
+        status = str(row.get("status", ""))
+        typer.echo(
+            f"{row.get('rowid', ''):>5}  {ts:<24} {broker:<7} {symbol:<6} {side:<4} {qty:<6} {price:<7} {status}"
+        )
+
+
+@ledger_app.command("tail")
+def ledger_tail(
+    limit: int = typer.Option(20, "--limit", min=1, help="Number of rows to show."),
+    path: Path = typer.Option(
+        Path("./artifacts/live/trades.csv"),
+        "--path",
+        exists=False,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=False,
+        help="Path to the live trades CSV.",
+    ),
+) -> None:
+    """Tail the live trades ledger (CSV)."""
+
+    if not path.exists():
+        typer.echo(f"[ledger] no trades recorded yet at {path}")
+        return
+
+    try:
+        lines = path.read_text().strip().splitlines()
+    except Exception as exc:  # pragma: no cover - filesystem issues
+        typer.echo(f"[ledger] failed to read {path}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if not lines:
+        typer.echo("[ledger] trades file is empty.")
+        return
+
+    header, *rows = lines
+    if not rows:
+        typer.echo("[ledger] no trade rows yet.")
+        return
+
+    tail_rows = rows[-int(limit) :][::-1]
+    typer.echo("epoch                iso_ts                   symbol side qty    price")
+    for line in tail_rows:
+        parts = line.split(",")
+        if len(parts) < 5:
+            continue
+        ts_raw, symbol, side, qty_raw, price_raw = parts[:5]
+        try:
+            epoch = int(float(ts_raw))
+        except ValueError:
+            epoch = 0
+        iso_ts = datetime.fromtimestamp(epoch).isoformat() if epoch else "?"
+        qty = _fmt_float(qty_raw)
+        price = _fmt_float(price_raw)
+        typer.echo(
+            f"{epoch:<20} {iso_ts:<24} {symbol:<6} {side:<4} {qty:<6} {price:<6}"
+        )
 @doctor_app.command("alpaca")
 def doctor_alpaca(
     symbol: str = typer.Option(

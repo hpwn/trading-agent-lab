@@ -166,6 +166,45 @@ def list_achievements() -> dict[str, Any]:
     return _load_state()
 
 
+def next_thresholds(state: dict[str, Any] | None = None) -> dict[str, dict[Mode, float | None]]:
+    """Compute the next threshold per track and mode."""
+
+    if state is None:
+        state = _load_state()
+    unlocked: set[str] = set()
+    achievements = state.get("achievements", {})
+    if isinstance(achievements, dict):
+        for entry in achievements.values():
+            if isinstance(entry, dict):
+                key = entry.get("key")
+                if isinstance(key, str):
+                    unlocked.add(key)
+
+    thresholds = get_thresholds()
+    result: dict[str, dict[Mode, float | None]] = {}
+    for track, values in thresholds.items():
+        kind = "trade" if track == "notional" else "profit"
+        track_map: dict[Mode, float | None] = {"paper": None, "real": None}
+        for mode in ("paper", "real"):
+            next_value: float | None = None
+            for threshold in values:
+                key = _achievement_key(kind, threshold, mode)
+                if key not in unlocked:
+                    next_value = float(threshold)
+                    break
+            track_map[mode] = next_value
+        result[track] = track_map
+    return result
+
+
+def format_threshold(value: float | None) -> str:
+    """Render a user-facing representation of a threshold value."""
+
+    if value is None:
+        return "complete"
+    return f"${_fmt_threshold(value)}"
+
+
 def is_unlocked(key: str) -> bool:
     """Check if a badge key has already been unlocked."""
 
@@ -215,9 +254,11 @@ def all_planned_badge_keys() -> list[str]:
 
 __all__ = [
     "all_planned_badge_keys",
+    "format_threshold",
     "get_thresholds",
     "is_unlocked",
     "list_achievements",
+    "next_thresholds",
     "record_profit_dollars",
     "record_trade_notional",
     "reset_achievements",

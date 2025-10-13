@@ -84,6 +84,24 @@ Use `tal doctor alpaca` to confirm your setup:
 Leave `REAL_TRADING_ENABLED` unset during day-to-day development to keep the
 paper/simulator paths safe by default.
 
+### Paper after-hours (opt-in)
+
+Paper sessions now support an explicit after-hours toggle. Set
+`allow_after_hours: true` under the `live:` block of your config (for example
+`config/live/alpaca_paper.yaml`) to opt into extended-hours routing when the
+market is closed. Orders remain paper-only by default and still respect the
+`REAL_TRADING_ENABLED` gate when pointing at real brokers.
+
+```yaml
+live:
+  adapter: "alpaca"
+  paper: true
+  allow_after_hours: true
+```
+
+When enabled the Alpaca paper client receives `extended_hours=true`, allowing
+tiny smoke trades even when the exchange is closed.
+
 ## Configuration
 
 ### .env autoload
@@ -134,6 +152,8 @@ Unlock playful milestones as you trade—purely cosmetic but great for morale.
 - First $1/$10/$100/$1000 profit milestones converted from PnL.
 - Artifacts live under `artifacts/achievements/` (state, NDJSON log, badge files).
 - CLI helpers: `tal achievements ls` and `tal achievements reset --yes`.
+- Progress snapshot: `tal achievements status` lists unlocked keys and upcoming
+  thresholds by track.
 - Generate README flair with `tal achievements badges --readme README.md` (manual; not run in CI).
 - Colors: green badges are unlocked, grey badges are waiting on future wins.
 
@@ -169,6 +189,13 @@ tal league nightly --config config/base.yaml
 `league.artifacts_dir`. The nightly command loads recent performance from the
 shared SQLite database, aggregates metrics, and writes promotion/retirement
 recommendations to `artifacts/league/allocations.json`.
+
+Inspect recent activity without cracking open the database manually:
+
+```bash
+tal orders tail --limit 10
+tal ledger tail --limit 5
+```
 
 Each agent specification now captures provenance metadata (`builder` and
 `lineage` blocks). This information is persisted in the `agents` table whenever
