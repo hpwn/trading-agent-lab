@@ -112,6 +112,21 @@ your YAML omits `allow_after_hours:`.
 `tal doctor alpaca` surfaces the effective flag so you can confirm your runtime
 environment before sending orders.
 
+**Local smoke in a closed market**
+
+```bash
+export ALLOW_AFTER_HOURS=1
+export LIVE_MAX_ORDER_USD=10000  # or 'none' to disable the guardrail entirely
+tal live --config config/live/alpaca_paper.yaml
+tal orders tail --limit 3
+```
+
+Optional: automatically downsize instead of erroring when the cap is tight:
+
+```bash
+export CLIP_ORDER_TO_MAX=1
+```
+
 ### Live loop & flatten helpers
 
 Need to exercise a strategy over multiple live steps? Enable the loop runner and

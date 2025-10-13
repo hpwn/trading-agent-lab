@@ -391,7 +391,12 @@ def doctor_alpaca(
             or account.get("equity")
         )
         buying_power = _fmt_float(buying_power_val) if buying_power_val is not None else "n/a"
-        price = _fmt_float(client.get_last_price(symbol))
+        latest_price_data = client.get_last_price(symbol)
+        try:
+            latest_price = float(latest_price_data)
+        except (TypeError, ValueError):
+            latest_price = None
+        price = _fmt_float(latest_price_data)
     except Exception as exc:  # pragma: no cover - depends on runtime client
         typer.echo(f"[doctor] runtime check failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -410,6 +415,39 @@ def doctor_alpaca(
     allow_env = os.environ.get("ALLOW_AFTER_HOURS")
     allow_after_hours = _truthy(allow_env) if allow_env is not None else False
     typer.echo(f"allow_after_hours: {allow_after_hours}")
+    if not market_open and not allow_after_hours:
+        typer.echo("[hint] Market is closed. To trade after-hours on paper:\n       export ALLOW_AFTER_HOURS=1")
+
+    cap_env_raw = os.environ.get("LIVE_MAX_ORDER_USD")
+    cap_disabled = False
+    cap_override: float | None = None
+    if cap_env_raw is not None:
+        lowered = cap_env_raw.strip().lower()
+        if lowered in {"", "none", "null"}:
+            cap_disabled = True
+        else:
+            try:
+                cap_override = float(cap_env_raw)
+            except ValueError:
+                cap_override = None
+
+    if latest_price is not None:
+        if cap_override is not None and latest_price > cap_override:
+            suggested = max(latest_price * 1.1, cap_override + 1)
+            typer.echo(
+                "[hint] Latest price ${0:.2f} exceeds max_order_usd ${1:.2f}.\n"
+                "       export LIVE_MAX_ORDER_USD={2:.0f} or set CLIP_ORDER_TO_MAX=1".format(
+                    latest_price, cap_override, suggested
+                )
+            )
+        elif not cap_disabled:
+            default_cap = 5.0
+            if cap_override is None and latest_price > default_cap:
+                typer.echo(
+                    "[hint] Default max_order_usd is $5.00; {sym} trades near ${px:.2f}.\n"
+                    "       export LIVE_MAX_ORDER_USD=10000 or set CLIP_ORDER_TO_MAX=1"
+                    .format(sym=symbol_upper, px=latest_price)
+                )
     broker_key = live_broker.strip().lower()
     if broker_key == "alpaca_real" and not gate_enabled:
         typer.secho(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import os
 from typing import Any, cast
 
 from ..base import Broker, Fill, Order
@@ -46,6 +48,23 @@ class AlpacaBroker(Broker):
         side = order.side.lower()
         qty = float(order.qty)
         px = float(order.ref_price) if order.ref_price is not None else self.price(symbol)
+
+        cap = self._env_cap_override(self.max_order_usd)
+        if cap is not None:
+            max_qty = math.floor(cap / max(px, 1e-9))
+            if qty > max_qty:
+                clip_flag = os.environ.get("CLIP_ORDER_TO_MAX", "").strip().lower()
+                if clip_flag in {"1", "true", "yes", "y"}:
+                    qty = float(max_qty)
+                    if qty <= 0:
+                        raise ValueError(
+                            (
+                                f"Order value ${px:.2f} exceeds max_order_usd ${cap:.2f}; cap too small for 1 share"
+                                " at current price. Raise LIVE_MAX_ORDER_USD or set live.max_order_usd in YAML."
+                            )
+                        )
+                # otherwise fall through so guardrails emit actionable hint
+
         self._guardrails(symbol, side, qty, px)
         slip = px * (self.slippage_bps / 1e4)
         exec_px = px + slip if side == "buy" else px - slip
@@ -116,9 +135,16 @@ class AlpacaBroker(Broker):
         if not self.is_market_open() and not self.allow_after_hours:
             raise ValueError("Market is closed")
         notional = qty * px
-        if self.max_order_usd is not None and notional > self.max_order_usd:
+        cap = self._env_cap_override(self.max_order_usd)
+        if cap is not None and notional > cap:
+            cap_env = os.environ.get("LIVE_MAX_ORDER_USD")
+            hint = (
+                " Increase 'live.max_order_usd' in YAML, or export LIVE_MAX_ORDER_USD (e.g. 10000),"
+                " or export CLIP_ORDER_TO_MAX=1 to downsize the qty automatically."
+            )
+            src = " (overridden by LIVE_MAX_ORDER_USD)" if cap_env else ""
             raise ValueError(
-                f"Order value ${notional:0.2f} exceeds max_order_usd ${self.max_order_usd:0.2f}"
+                f"Order value ${notional:0.2f} exceeds max_order_usd ${cap:0.2f}{src}.{hint}"
             )
         account = self.client.get_account()
         equity_val = float(account.get("equity", 0.0) or 0.0)
@@ -145,3 +171,15 @@ class AlpacaBroker(Broker):
                         raise ValueError(
                             f"Daily loss {equity_loss_pct:.2f}% exceeds max_daily_loss_pct {self.max_daily_loss_pct}%"
                         )
+
+    def _env_cap_override(self, default_cap: float | None) -> float | None:
+        raw = os.environ.get("LIVE_MAX_ORDER_USD")
+        if raw is None:
+            return default_cap
+        raw_l = raw.strip().lower()
+        if raw_l in {"", "none", "null"}:
+            return None
+        try:
+            return float(raw)
+        except Exception:
+            return default_cap
