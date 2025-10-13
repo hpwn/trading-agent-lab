@@ -77,6 +77,7 @@ def _install_alpaca_stubs(monkeypatch) -> None:
             self.kwargs = kwargs
 
     pkg_trading_requests.MarketOrderRequest = _FakeMarketOrderRequest
+    pkg_trading_requests.LimitOrderRequest = _FakeMarketOrderRequest
 
     modules = {
         "alpaca.common.exceptions": pkg_common,

@@ -31,6 +31,7 @@ class StubAlpacaClient:
         qty: float,
         type: str = "market",
         time_in_force: str = "day",
+        limit_price: float | None = None,
         extended_hours: bool | None = None,
     ) -> dict:
         assert time_in_force == "day"
@@ -40,6 +41,7 @@ class StubAlpacaClient:
                 "side": side,
                 "qty": qty,
                 "type": type,
+                "limit_price": limit_price,
                 "extended_hours": bool(extended_hours),
             }
         )
@@ -66,3 +68,5 @@ def test_after_hours_enabled_submits_with_flag() -> None:
     assert client.submitted
     payload = client.submitted[0]
     assert payload["extended_hours"] is True
+    assert payload["type"] == "limit"
+    assert payload["limit_price"] is not None

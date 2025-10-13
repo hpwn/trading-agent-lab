@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 from ..base import Broker, Fill, Order
 from . import AlpacaClient
 
@@ -48,23 +50,37 @@ class AlpacaBroker(Broker):
         slip = px * (self.slippage_bps / 1e4)
         exec_px = px + slip if side == "buy" else px - slip
         extended_hours = self.allow_after_hours and self.paper
+
+        submit_kwargs: dict[str, Any] = {
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "time_in_force": "day",
+        }
         if extended_hours:
-            raw_order = self.client.submit_order(
-                symbol=symbol,
-                side=side,
-                qty=qty,
-                type=order.type,
-                time_in_force="day",
-                extended_hours=True,
-            )
+            limit_price = round(exec_px, 2)
+            submit_kwargs["type"] = "limit"
+            submit_kwargs["limit_price"] = limit_price
+            submit_kwargs["extended_hours"] = True
         else:
-            raw_order = self.client.submit_order(
-                symbol=symbol,
-                side=side,
-                qty=qty,
-                type=order.type,
-                time_in_force="day",
-            )
+            submit_kwargs["type"] = "market"
+
+        try:
+            raw_order = self.client.submit_order(**submit_kwargs)
+        except TypeError:
+            client_any = cast(Any, self.client)
+            if extended_hours:
+                raw_order = client_any.submit_order(
+                    symbol,
+                    qty,
+                    side,
+                    "day",
+                    "limit",
+                    round(exec_px, 2),
+                    True,
+                )
+            else:
+                raw_order = client_any.submit_order(symbol, qty, side, "day")
         self._known_symbols.add(symbol)
         broker_order_id = None
         status = "submitted"

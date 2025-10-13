@@ -100,7 +100,10 @@ live:
 ```
 
 When enabled the Alpaca paper client receives `extended_hours=true`, allowing
-tiny smoke trades even when the exchange is closed.
+tiny smoke trades even when the exchange is closed. Alpaca requires these
+extended-hours orders to be **DAY + LIMIT**, so the broker sets a protective
+limit around the quoted price while continuing to use MARKET orders during
+regular hours.
 
 You can also flip after-hours per run with `ALLOW_AFTER_HOURS=1 tal live --config
 config/live/alpaca_paper.yaml`; the CLI honors this environment variable even if

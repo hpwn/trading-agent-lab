@@ -28,7 +28,13 @@ def test_alpaca_clients_use_correct_urls(monkeypatch):
     pkg_trading_enums.OrderSide = object
     pkg_trading_enums.TimeInForce = object
     pkg_trading_req = types.ModuleType("alpaca.trading.requests")
-    pkg_trading_req.MarketOrderRequest = object
+
+    class _FakeOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    pkg_trading_req.MarketOrderRequest = _FakeOrderRequest
+    pkg_trading_req.LimitOrderRequest = _FakeOrderRequest
 
     monkeypatch.setitem(sys.modules, "alpaca.common.exceptions", pkg_common)
     monkeypatch.setitem(sys.modules, "alpaca.trading.client", pkg_trading_client)
@@ -81,7 +87,12 @@ def test_alpaca_data_override_respected(monkeypatch):
     modules["alpaca.data.requests"].StockLatestTradeRequest = object
     modules["alpaca.trading.enums"].OrderSide = object
     modules["alpaca.trading.enums"].TimeInForce = object
-    modules["alpaca.trading.requests"].MarketOrderRequest = object
+    class _StubOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    modules["alpaca.trading.requests"].MarketOrderRequest = _StubOrderRequest
+    modules["alpaca.trading.requests"].LimitOrderRequest = _StubOrderRequest
 
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)

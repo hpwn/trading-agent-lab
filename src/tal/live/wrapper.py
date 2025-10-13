@@ -613,6 +613,10 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
         from alpaca.trading.client import TradingClient
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest
+        try:
+            from alpaca.trading.requests import LimitOrderRequest
+        except Exception:
+            LimitOrderRequest = MarketOrderRequest
     except Exception as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("alpaca extra not installed. Install with `pip install -e '.[alpaca]'`") from exc
 
@@ -674,24 +678,35 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
             qty: float,
             type: str = "market",
             time_in_force: str = "day",
+            limit_price: Optional[float] = None,
             extended_hours: Optional[bool] = None,
         ) -> dict:
-            if type.lower() != "market":
-                raise ValueError("Only market orders are supported in AlpacaBroker")
             order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
             tif_enum = TimeInForce.DAY if time_in_force.lower() == "day" else TimeInForce.DAY
-            request_kwargs = {
+            request_kwargs: dict[str, Any] = {
                 "symbol": symbol,
                 "qty": qty,
                 "side": order_side,
                 "time_in_force": tif_enum,
             }
-            if extended_hours:
-                try:
-                    request = MarketOrderRequest(**request_kwargs, extended_hours=True)
-                except TypeError:
-                    request = MarketOrderRequest(**request_kwargs)
+
+            order_type = (type or "market").lower()
+            if order_type == "limit":
+                if limit_price is None:
+                    raise ValueError("limit orders require limit_price")
+                request_kwargs["limit_price"] = float(limit_price)
+                if (
+                    extended_hours is not None
+                    and "extended_hours" in getattr(LimitOrderRequest, "model_fields", {})
+                ):
+                    request_kwargs["extended_hours"] = bool(extended_hours)
+                request = LimitOrderRequest(**request_kwargs)
             else:
+                if (
+                    extended_hours is not None
+                    and "extended_hours" in getattr(MarketOrderRequest, "model_fields", {})
+                ):
+                    request_kwargs["extended_hours"] = bool(extended_hours)
                 request = MarketOrderRequest(**request_kwargs)
             order = self._trading.submit_order(order_data=request)
             if hasattr(order, "model_dump") and callable(order.model_dump):

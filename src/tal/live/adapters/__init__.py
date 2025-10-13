@@ -18,6 +18,7 @@ class AlpacaClient(Protocol):
         qty: float,
         type: str = "market",
         time_in_force: str = "day",
+        limit_price: Optional[float] = None,
         extended_hours: Optional[bool] = None,
     ) -> Any: ...
 

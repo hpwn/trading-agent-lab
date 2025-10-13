@@ -23,6 +23,7 @@ class _StubAlpacaClient:
         qty: float,
         type: str = "market",
         time_in_force: str = "day",
+        limit_price: float | None = None,
         extended_hours: bool | None = None,
     ) -> dict[str, object]:
         self.orders.append(
@@ -32,6 +33,7 @@ class _StubAlpacaClient:
                 "qty": qty,
                 "type": type,
                 "time_in_force": time_in_force,
+                "limit_price": limit_price,
                 "extended_hours": extended_hours,
             }
         )
@@ -82,3 +84,5 @@ def test_after_hours_env_flag_is_honored(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.stdout
     assert client.orders, "expected at least one order submission"
     assert client.orders[0]["extended_hours"] is True
+    assert client.orders[0]["type"] == "limit"
+    assert client.orders[0]["limit_price"] is not None
