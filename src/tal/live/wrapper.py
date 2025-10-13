@@ -357,13 +357,19 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
                 raise ValueError("Only market orders are supported in AlpacaBroker")
             order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
             tif_enum = TimeInForce.DAY if time_in_force.lower() == "day" else TimeInForce.DAY
-            request = MarketOrderRequest(
-                symbol=symbol,
-                qty=qty,
-                side=order_side,
-                time_in_force=tif_enum,
-                extended_hours=bool(extended_hours),
-            )
+            request_kwargs = {
+                "symbol": symbol,
+                "qty": qty,
+                "side": order_side,
+                "time_in_force": tif_enum,
+            }
+            if extended_hours:
+                try:
+                    request = MarketOrderRequest(**request_kwargs, extended_hours=True)
+                except TypeError:
+                    request = MarketOrderRequest(**request_kwargs)
+            else:
+                request = MarketOrderRequest(**request_kwargs)
             order = self._trading.submit_order(order_data=request)
             if hasattr(order, "model_dump") and callable(order.model_dump):
                 return order.model_dump()
