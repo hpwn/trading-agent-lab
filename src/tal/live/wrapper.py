@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, Optional, cast
 
 from pandas import Series
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -345,22 +345,24 @@ def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> Alpac
 
         def submit_order(
             self,
+            *,
             symbol: str,
             side: str,
             qty: float,
-            type: str,
-            *,
-            extended_hours: bool = False,
+            type: str = "market",
+            time_in_force: str = "day",
+            extended_hours: Optional[bool] = None,
         ) -> dict:
             if type.lower() != "market":
                 raise ValueError("Only market orders are supported in AlpacaBroker")
             order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+            tif_enum = TimeInForce.DAY if time_in_force.lower() == "day" else TimeInForce.DAY
             request = MarketOrderRequest(
                 symbol=symbol,
                 qty=qty,
                 side=order_side,
-                time_in_force=TimeInForce.DAY,
-                extended_hours=extended_hours or None,
+                time_in_force=tif_enum,
+                extended_hours=bool(extended_hours),
             )
             order = self._trading.submit_order(order_data=request)
             if hasattr(order, "model_dump") and callable(order.model_dump):

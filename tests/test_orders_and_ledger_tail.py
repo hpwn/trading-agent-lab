@@ -57,9 +57,14 @@ def test_orders_and_ledger_tail(tmp_path):
     ledger_path = tmp_path / "trades.csv"
     epoch = int(datetime.now(timezone.utc).timestamp())
     ledger_path.write_text(
-        "ts,symbol,side,qty,price\n"
-        f"{epoch - 10},SPY,buy,1,5.0\n"
-        f"{epoch},QQQ,sell,2,7.0\n"
+        "\n".join(
+            [
+                "ts,symbol,side,qty,price",
+                f"{epoch - 10},SPY,buy,1,5.0",
+                f"{epoch},QQQ,sell,2,7.0",
+                "",
+            ]
+        )
     )
 
     runner = CliRunner()

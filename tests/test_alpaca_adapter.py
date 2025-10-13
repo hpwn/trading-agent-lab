@@ -43,7 +43,18 @@ class FakeClient:
     def get_position(self, symbol: str) -> float:
         return self._positions.get(symbol, 0.0)
 
-    def submit_order(self, symbol: str, side: str, qty: float, type: str) -> dict:
+    def submit_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: float,
+        type: str = "market",
+        time_in_force: str = "day",
+        extended_hours: bool | None = None,
+    ) -> dict:
+        assert time_in_force == "day"
+        assert type == "market"
         if side == "buy":
             self._positions[symbol] = self._positions.get(symbol, 0.0) + qty
             self._cash -= self.get_last_price(symbol) * qty
@@ -56,6 +67,7 @@ class FakeClient:
             "side": side,
             "qty": qty,
             "type": type,
+            "extended_hours": bool(extended_hours),
         }
 
 

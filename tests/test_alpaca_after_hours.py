@@ -25,20 +25,22 @@ class StubAlpacaClient:
 
     def submit_order(
         self,
+        *,
         symbol: str,
         side: str,
         qty: float,
-        type: str,
-        *,
-        extended_hours: bool = False,
+        type: str = "market",
+        time_in_force: str = "day",
+        extended_hours: bool | None = None,
     ) -> dict:
+        assert time_in_force == "day"
         self.submitted.append(
             {
                 "symbol": symbol,
                 "side": side,
                 "qty": qty,
                 "type": type,
-                "extended_hours": extended_hours,
+                "extended_hours": bool(extended_hours),
             }
         )
         return {"id": "order-1", "status": "accepted"}
