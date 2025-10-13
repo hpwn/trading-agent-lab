@@ -59,12 +59,16 @@ def _badge_markdown(key: str, *, style: Style, label_case: LabelCase) -> str:
     unlocked = achievements.is_unlocked(key)
     status = "unlocked" if unlocked else "locked"
     color = "success" if unlocked else "lightgrey"
-    encoded_label = quote(label, safe="")
+    emoji = "🔓" if unlocked else "🔒"
+    label_with_emoji = f"{label} {emoji}"
+    encoded_label = quote(label_with_emoji, safe="")
     url = (
         "https://img.shields.io/badge/"
         f"{encoded_label}-{status}-{color}?style={style}"
     )
-    alt_text = label.title() if label_case == "lower" else label
+    alt_text = (
+        label_with_emoji.title() if label_case == "lower" else label_with_emoji
+    )
     return f"![{alt_text}]({url})"
 
 

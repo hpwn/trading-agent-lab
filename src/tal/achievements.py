@@ -6,9 +6,10 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 Mode = Literal["paper", "real"]
+ProfitSource = Literal["eval", "live", "both"]
 
 
 def _is_enabled() -> bool:
@@ -68,6 +69,14 @@ def _append_log(entry: dict[str, Any]) -> None:
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, sort_keys=True))
         handle.write("\n")
+
+
+def get_profit_source() -> ProfitSource:
+    raw = os.getenv("ACHIEVEMENTS_PROFIT_SOURCE", "eval")
+    key = str(raw).strip().lower()
+    if key not in {"eval", "live", "both"}:
+        return "eval"
+    return cast(ProfitSource, key)
 
 
 def _write_badge(entry: dict[str, Any]) -> None:
@@ -151,6 +160,37 @@ def record_profit_dollars(pnl_dollars: float, mode: Mode) -> list[str]:
         return []
     if value <= 0:
         return []
+    unlocked: list[str] = []
+    for threshold in _PROFIT_THRESHOLDS:
+        if value >= threshold:
+            key = _record("profit", threshold, mode=mode, meta={"profit": value})
+            if key:
+                unlocked.append(key)
+    return unlocked
+
+
+def record_live_profit(mode: Mode, profit: float) -> list[str]:
+    """Record realized live profit and return unlocked achievements."""
+
+    try:
+        value = float(profit)
+    except (TypeError, ValueError):
+        return []
+
+    entry = {
+        "type": "live_profit",
+        "mode": mode,
+        "profit": value,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        _append_log(entry)
+    except OSError:
+        pass
+
+    if not _is_enabled() or value <= 0:
+        return []
+
     unlocked: list[str] = []
     for threshold in _PROFIT_THRESHOLDS:
         if value >= threshold:
@@ -255,10 +295,12 @@ def all_planned_badge_keys() -> list[str]:
 __all__ = [
     "all_planned_badge_keys",
     "format_threshold",
+    "get_profit_source",
     "get_thresholds",
     "is_unlocked",
     "list_achievements",
     "next_thresholds",
+    "record_live_profit",
     "record_profit_dollars",
     "record_trade_notional",
     "reset_achievements",

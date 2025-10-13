@@ -14,6 +14,7 @@ def test_achievements_status_cli(monkeypatch, tmp_path):
     achievements_dir = tmp_path / "achievements"
     monkeypatch.setenv("ACHIEVEMENTS_DIR", str(achievements_dir))
     monkeypatch.setenv("ACHIEVEMENTS_ENABLED", "1")
+    monkeypatch.setenv("ACHIEVEMENTS_PROFIT_SOURCE", "eval")
     reset_achievements()
 
     record_trade_notional(2.0, "paper")

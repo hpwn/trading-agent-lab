@@ -6,7 +6,9 @@ import os
 import sys
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
+import time
 from pathlib import Path
 from typing import Any, Literal, Optional, cast
 
@@ -14,7 +16,7 @@ from pandas import Series
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from .adapters import AlpacaClient, SimMarketData, build_broker
-from .base import Fill, Order
+from .base import Broker, Fill, Order
 from tal.achievements import record_trade_notional
 from tal.storage.db import get_engine, record_order, record_run
 
@@ -93,29 +95,39 @@ def _select_alpaca_urls(
     return trading_url, data_url
 
 
-def run_live_once(
-    engine_cfg: dict[str, Any],
-    price_map: Mapping[str, Sequence[float] | Series] | None = None,
-    *,
-    alpaca_client: AlpacaClient | None = None,
-) -> dict[str, Any]:
-    """Execute a single deterministic live trading step."""
 
-    ts_start = datetime.now(timezone.utc)
-    live_cfg = LiveCfg(**engine_cfg.get("live", {}))
-    ledger_dir = Path(live_cfg.ledger_dir)
-    trades_path = _ensure_ledger(ledger_dir)
+@dataclass
+class _RuntimeContext:
+    engine_cfg: dict[str, Any]
+    live_cfg: LiveCfg
+    symbols: list[str]
+    trades_path: Path
+    db_engine: Any | None
+    agent_id: str
+    mode: str
+
+
+def _resolve_symbols(engine_cfg: dict[str, Any], live_cfg: LiveCfg) -> list[str]:
     universe = engine_cfg.get("universe", {})
     symbols: list[str] = []
-    if isinstance(universe, dict):
-        symbols = list(universe.get("symbols", []))
+    if isinstance(universe, Mapping):
+        raw_symbols = universe.get("symbols", [])
+        if isinstance(raw_symbols, (list, tuple)):
+            symbols = [str(sym) for sym in raw_symbols]
     elif isinstance(universe, (list, tuple)):
-        symbols = list(universe)
+        symbols = [str(sym) for sym in universe]
     if not symbols and live_cfg.symbol:
         symbols = [live_cfg.symbol]
     if not symbols:
         symbols = ["SPY"]
-    bars = max(1, int(live_cfg.bars))
+    return symbols
+
+
+def _build_history_map(
+    symbols: Sequence[str],
+    bars: int,
+    price_map: Mapping[str, Sequence[float] | Series] | None,
+) -> dict[str, list[float]]:
     history_map: dict[str, list[float]] = {}
     for symbol in symbols:
         prices: Sequence[float] | Series | None = None
@@ -128,80 +140,20 @@ def run_live_once(
         else:
             price_values = [float(p) for p in list(prices)[:bars]]
             if len(price_values) < bars:
-                price_values = (price_values + [price_values[-1]] * (bars - len(price_values))) if price_values else [100.0] * bars
+                price_values = (
+                    price_values + [price_values[-1]] * (bars - len(price_values))
+                    if price_values
+                    else [100.0] * bars
+                )
         history_map[symbol] = price_values
-    md = SimMarketData(history_map)
+    return history_map
 
-    broker_kwargs: dict[str, Any]
-    broker_client: AlpacaClient | None = None
-    if live_cfg.adapter == "alpaca":
-        if not live_cfg.paper:
-            _require_real_trading_unlock()
-        broker_kwargs = {
-            "slippage_bps": live_cfg.slippage_bps,
-            "max_order_usd": live_cfg.max_order_usd,
-            "max_position_pct": live_cfg.max_position_pct,
-            "max_daily_loss_pct": live_cfg.max_daily_loss_pct,
-            "allow_after_hours": live_cfg.allow_after_hours,
-            "paper": live_cfg.paper,
-        }
-        broker_client = alpaca_client or _build_alpaca_client_from_env(
-            paper=live_cfg.paper,
-            base_url=live_cfg.base_url,
-        )
-    else:
-        broker_kwargs = {
-            "cash": live_cfg.cash,
-            "ledger_dir": ledger_dir,
-            "commission": live_cfg.commission,
-            "slippage_bps": live_cfg.slippage_bps,
-        }
-    br = build_broker(live_cfg.adapter, client=broker_client, **broker_kwargs)
 
-    sym = symbols[0]
-    strat_cfg = engine_cfg.get("strategy", {})
-    strat_name = strat_cfg.get("name", "rsi_mean_rev")
-    params = strat_cfg.get("params", {})
-    StratCls = _load_strategy(strat_name)
-    allowed_params = {k: params[k] for k in ("rsi_len", "oversold", "overbought") if k in params}
-    strat = StratCls(**allowed_params)
-
-    df = md.history(sym, bars)
-    sig_series = strat.generate_signals(df)
-    last_sig = int(sig_series.iloc[-1]) if not sig_series.empty else 0
-
-    px = md.latest_price(sym)
-    if live_cfg.adapter == "alpaca" and hasattr(br, "price"):
-        price_fn = getattr(br, "price")
-        if callable(price_fn):
-            price_callable = cast(Callable[[str], float], price_fn)
-            px = float(price_callable(sym))
-    current_pos = br.position(sym)
-    equity = br.cash() + current_pos * px
-    cap = equity * (live_cfg.max_position_pct / 100.0)
-    target_qty = 0
-    if last_sig > 0:
-        live_size_pct = live_cfg.size_pct if live_cfg.size_pct is not None else params.get("size_pct")
-        size_pct = float(live_size_pct if live_size_pct is not None else 10.0) / 100.0
-        dollars = min(cap, equity * size_pct)
-        target_qty = max(0, math.floor(dollars / max(px, 1e-6)))
-    delta = target_qty - current_pos
-    fill = None
-    if delta > 0:
-        fill = br.submit(Order(sym, "buy", qty=float(delta), ref_price=px))
-    elif delta < 0:
-        fill = br.submit(Order(sym, "sell", qty=float(-delta), ref_price=px))
-
-    ts_end = datetime.now(timezone.utc)
-    result = {
-        "symbol": sym,
-        "signal": last_sig,
-        "target_qty": float(target_qty),
-        "delta": float(delta),
-        "price": float(px),
-        "cash_after": br.cash(),
-        "fill": fill.__dict__ if fill else None,
-    }
+def _prepare_runtime_context(engine_cfg: dict[str, Any]) -> _RuntimeContext:
+    live_cfg = LiveCfg(**engine_cfg.get("live", {}))
+    ledger_dir = Path(live_cfg.ledger_dir)
+    trades_path = _ensure_ledger(ledger_dir)
+    symbols = _resolve_symbols(engine_cfg, live_cfg)
     storage_cfg = engine_cfg.get("storage", {})
     db_url = storage_cfg.get("db_url")
     db_engine = get_engine(db_url) if db_url else None
@@ -216,59 +168,378 @@ def run_live_once(
         or "unknown"
     )
     mode = engine_cfg.get("mode", "live")
-    run_id = engine_cfg.get("run_id") or str(uuid.uuid4())
+    return _RuntimeContext(engine_cfg, live_cfg, symbols, trades_path, db_engine, agent_id, mode)
+
+
+def _build_broker_for_context(
+    context: _RuntimeContext,
+    *,
+    alpaca_client: AlpacaClient | None,
+) -> tuple[Broker, AlpacaClient | None]:
+    live_cfg = context.live_cfg
+    ledger_dir = Path(live_cfg.ledger_dir)
+    broker_kwargs: dict[str, Any]
+    if live_cfg.adapter == "alpaca":
+        if not live_cfg.paper:
+            _require_real_trading_unlock()
+        broker_kwargs = {
+            "slippage_bps": live_cfg.slippage_bps,
+            "max_order_usd": live_cfg.max_order_usd,
+            "max_position_pct": live_cfg.max_position_pct,
+            "max_daily_loss_pct": live_cfg.max_daily_loss_pct,
+            "allow_after_hours": live_cfg.allow_after_hours,
+            "paper": live_cfg.paper,
+        }
+        client = alpaca_client or _build_alpaca_client_from_env(
+            paper=live_cfg.paper,
+            base_url=live_cfg.base_url,
+        )
+        broker = build_broker("alpaca", client=client, **broker_kwargs)
+        return broker, client
+    broker_kwargs = {
+        "cash": live_cfg.cash,
+        "ledger_dir": ledger_dir,
+        "commission": live_cfg.commission,
+        "slippage_bps": live_cfg.slippage_bps,
+    }
+    broker = build_broker("sim", client=None, **broker_kwargs)
+    return broker, None
+
+
+def _achievement_mode(live_cfg: LiveCfg) -> Literal["paper", "real"]:
+    execute_flag = os.getenv("LIVE_EXECUTE", "0").lower()
+    execute_enabled = execute_flag in {"1", "true", "yes"}
+    broker_name = live_cfg.adapter
+    return "real" if broker_name == "alpaca" and execute_enabled else "paper"
+
+
+def _record_fill(
+    context: _RuntimeContext,
+    fill: Fill,
+    trades_path: Path,
+    run_id: str,
+) -> None:
+    event_ts = datetime.now(timezone.utc)
+    _append_trade(trades_path, fill, ts=event_ts)
+    if context.db_engine is not None:
+        broker_order_id = getattr(fill, "broker_order_id", None)
+        record_order(
+            context.db_engine,
+            {
+                "id": broker_order_id or f"{run_id}:{uuid.uuid4()}",
+                "ts": event_ts.isoformat(),
+                "agent_id": context.agent_id,
+                "symbol": fill.symbol,
+                "side": fill.side,
+                "qty": fill.qty,
+                "price": fill.price,
+                "broker": context.live_cfg.adapter,
+                "broker_order_id": broker_order_id,
+                "status": getattr(fill, "status", "filled"),
+            },
+        )
+
+    try:
+        notional = abs(float(fill.price) * float(fill.qty))
+        achievement_mode = _achievement_mode(context.live_cfg)
+        unlocked = record_trade_notional(notional, achievement_mode)
+        if unlocked:
+            print(f"[achievements] unlocked: {', '.join(unlocked)}")
+    except Exception as exc:  # pragma: no cover - best effort logging
+        print(f"[achievements] error: {exc}", file=sys.stderr)
+
+
+def _compute_open_position_from_ledger(
+    trades_path: Path,
+    symbol: str,
+) -> tuple[float, float]:
+    if not trades_path.exists():
+        return 0.0, 0.0
+    qty = 0.0
+    avg_cost = 0.0
+    try:
+        with trades_path.open("r", encoding="utf-8") as handle:
+            next(handle, None)
+            for line in handle:
+                parts = line.strip().split(",")
+                if len(parts) < 5:
+                    continue
+                _, line_symbol, side, qty_raw, price_raw = parts[:5]
+                if line_symbol != symbol:
+                    continue
+                try:
+                    trade_qty = float(qty_raw)
+                    trade_price = float(price_raw)
+                except (TypeError, ValueError):
+                    continue
+                signed_qty = trade_qty if side.lower() == "buy" else -trade_qty
+                new_qty = qty + signed_qty
+                if qty == 0 or (qty > 0 and new_qty > 0 and signed_qty > 0) or (
+                    qty < 0 and new_qty < 0 and signed_qty < 0
+                ):
+                    if new_qty != 0:
+                        avg_cost = (
+                            (avg_cost * abs(qty)) + (trade_price * abs(signed_qty))
+                        ) / abs(new_qty)
+                elif new_qty == 0:
+                    avg_cost = 0.0
+                elif (qty > 0 and new_qty > 0) or (qty < 0 and new_qty < 0):
+                    pass
+                else:
+                    avg_cost = trade_price if new_qty != 0 else 0.0
+                qty = new_qty
+    except OSError:
+        return 0.0, 0.0
+    return qty, avg_cost
+
+
+def _make_price_fn(
+    broker: Broker,
+    context: _RuntimeContext,
+    last_prices: Mapping[str, float],
+) -> Callable[[str], float]:
+    def _price(symbol: str) -> float:
+        if symbol in last_prices:
+            return float(last_prices[symbol])
+        price_attr = getattr(broker, "price", None)
+        if callable(price_attr):
+            price_callable = cast(Callable[[str], float], price_attr)
+            try:
+                return float(price_callable(symbol))
+            except Exception:
+                pass
+        bars = max(1, int(context.live_cfg.bars))
+        history = _build_history_map([symbol], bars, None)
+        values = history.get(symbol, [])
+        return float(values[-1]) if values else 100.0
+
+    return _price
+
+
+def _execute_step(
+    context: _RuntimeContext,
+    broker: Broker,
+    *,
+    price_map: Mapping[str, Sequence[float] | Series] | None,
+    run_id: str,
+    ts_start: datetime | None = None,
+) -> tuple[dict[str, Any], datetime, dict[str, float]]:
+    ts_start = ts_start or datetime.now(timezone.utc)
+    live_cfg = context.live_cfg
+    bars = max(1, int(live_cfg.bars))
+    history_map = _build_history_map(context.symbols, bars, price_map)
+    md = SimMarketData(history_map)
+
+    strat_cfg = context.engine_cfg.get("strategy", {})
+    strat_name = strat_cfg.get("name", "rsi_mean_rev")
+    params = strat_cfg.get("params", {})
+    StratCls = _load_strategy(strat_name)
+    allowed_params = {
+        k: params[k]
+        for k in ("rsi_len", "oversold", "overbought")
+        if k in params
+    }
+    strat = StratCls(**allowed_params)
+
+    sym = context.symbols[0]
+    df = md.history(sym, bars)
+    sig_series = strat.generate_signals(df)
+    last_sig = int(sig_series.iloc[-1]) if not sig_series.empty else 0
+
+    px = float(md.latest_price(sym))
+    last_prices: dict[str, float] = {sym: px}
+    price_attr = getattr(broker, "price", None)
+    if live_cfg.adapter == "alpaca" and callable(price_attr):
+        price_callable = cast(Callable[[str], float], price_attr)
+        try:
+            px = float(price_callable(sym))
+            last_prices[sym] = px
+        except Exception:
+            pass
+
+    current_pos = float(broker.position(sym))
+    equity = broker.cash() + current_pos * px
+    cap = equity * (live_cfg.max_position_pct / 100.0)
+    target_qty = 0.0
+    if last_sig > 0:
+        live_size_pct = (
+            live_cfg.size_pct if live_cfg.size_pct is not None else params.get("size_pct")
+        )
+        size_pct = float(live_size_pct if live_size_pct is not None else 10.0) / 100.0
+        dollars = min(cap, equity * size_pct)
+        target_qty = float(max(0, math.floor(dollars / max(px, 1e-6))))
+
+    delta = target_qty - current_pos
+    fill: Fill | None = None
+    if delta > 0:
+        fill = broker.submit(Order(sym, "buy", qty=float(delta), ref_price=px))
+    elif delta < 0:
+        fill = broker.submit(Order(sym, "sell", qty=float(-delta), ref_price=px))
+
+    ts_end = datetime.now(timezone.utc)
+    result = {
+        "symbol": sym,
+        "signal": last_sig,
+        "target_qty": float(target_qty),
+        "delta": float(delta),
+        "price": float(px),
+        "cash_after": broker.cash(),
+        "fill": fill.__dict__ if fill else None,
+    }
 
     if fill:
-        event_ts = datetime.now(timezone.utc)
-        _append_trade(trades_path, fill, ts=event_ts)
-        if db_engine is not None:
-            broker_order_id = getattr(fill, "broker_order_id", None)
-            record_order(
-                db_engine,
-                {
-                    "id": broker_order_id or f"{run_id}:{uuid.uuid4()}",
-                    "ts": event_ts.isoformat(),
-                    "agent_id": agent_id,
-                    "symbol": fill.symbol,
-                    "side": fill.side,
-                    "qty": fill.qty,
-                    "price": fill.price,
-                    "broker": live_cfg.adapter,
-                    "broker_order_id": broker_order_id,
-                    "status": getattr(fill, "status", "filled"),
-                },
-            )
+        _record_fill(context, fill, context.trades_path, run_id)
 
-        try:
-            notional = abs(float(fill.price) * float(fill.qty))
-            execute_flag = os.getenv("LIVE_EXECUTE", "0").lower()
-            execute_enabled = execute_flag in {"1", "true", "yes"}
-            broker_name = live_cfg.adapter
-            achievement_mode: Literal["paper", "real"] = (
-                "real" if broker_name == "alpaca" and execute_enabled else "paper"
-            )
-            unlocked = record_trade_notional(notional, achievement_mode)
-            if unlocked:
-                print(f"[achievements] unlocked: {', '.join(unlocked)}")
-        except Exception as exc:  # pragma: no cover - best effort logging
-            print(f"[achievements] error: {exc}", file=sys.stderr)
-
-    if db_engine is not None:
+    if context.db_engine is not None:
         record_run(
-            db_engine,
+            context.db_engine,
             {
                 "id": run_id,
-                "agent_id": agent_id,
-                "mode": mode,
+                "agent_id": context.agent_id,
+                "mode": context.mode,
                 "ts_start": ts_start.isoformat(),
                 "ts_end": ts_end.isoformat(),
-                "commit_sha": engine_cfg.get("commit_sha"),
-                "config_hash": engine_cfg.get("config_hash"),
+                "commit_sha": context.engine_cfg.get("commit_sha"),
+                "config_hash": context.engine_cfg.get("config_hash"),
             },
             [],
-            engine_cfg=engine_cfg,
+            engine_cfg=context.engine_cfg,
         )
+
+    return result, ts_end, last_prices
+
+
+def run_live_once(
+    engine_cfg: dict[str, Any],
+    price_map: Mapping[str, Sequence[float] | Series] | None = None,
+    *,
+    alpaca_client: AlpacaClient | None = None,
+) -> dict[str, Any]:
+    """Execute a single deterministic live trading step."""
+
+    context = _prepare_runtime_context(engine_cfg)
+    broker, _ = _build_broker_for_context(context, alpaca_client=alpaca_client)
+    run_id = context.engine_cfg.get("run_id") or str(uuid.uuid4())
+    result, _, _ = _execute_step(
+        context,
+        broker,
+        price_map=price_map,
+        run_id=run_id,
+    )
     return result
+
+
+def run_live_loop(
+    engine_cfg: dict[str, Any],
+    max_steps: int,
+    interval: float,
+    flat_at_end: bool,
+    price_map: Mapping[str, Sequence[float] | Series] | None = None,
+    *,
+    alpaca_client: AlpacaClient | None = None,
+) -> dict[str, Any]:
+    """Run multiple live steps with optional terminal flatten."""
+
+    context = _prepare_runtime_context(engine_cfg)
+    broker, _ = _build_broker_for_context(context, alpaca_client=alpaca_client)
+    steps: list[dict[str, Any]] = []
+    last_prices: dict[str, float] = {}
+    base_run_id = context.engine_cfg.get("run_id") or str(uuid.uuid4())
+    total_steps = max(0, int(max_steps))
+    for idx in range(total_steps):
+        step_run_id = f"{base_run_id}:{idx + 1}" if total_steps > 1 else base_run_id
+        result, _, price_snapshot = _execute_step(
+            context,
+            broker,
+            price_map=price_map,
+            run_id=step_run_id,
+        )
+        steps.append(result)
+        last_prices.update(price_snapshot)
+        if idx < total_steps - 1 and interval > 0:
+            time.sleep(interval)
+
+    flatten_result: dict[str, Any] | None = None
+    if flat_at_end:
+        flatten_run_id = f"{base_run_id}:flatten"
+        price_fn = _make_price_fn(broker, context, last_prices)
+        symbol = context.symbols[0]
+        flatten_result = flatten_symbol(
+            broker,
+            symbol,
+            price_fn,
+            context=context,
+            trades_path=context.trades_path,
+            run_id=flatten_run_id,
+        )
+
+    loop_result: dict[str, Any] = {"steps": steps}
+    if flatten_result is not None:
+        loop_result["flatten"] = flatten_result
+    return loop_result
+
+
+def flatten_symbol(
+    br: Broker,
+    symbol: str,
+    price_fn: Callable[[str], float],
+    *,
+    context: _RuntimeContext | None = None,
+    trades_path: Path | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Flatten a symbol position for the provided broker."""
+
+    ledger_qty = 0.0
+    avg_cost = 0.0
+    current_pos = float(br.position(symbol))
+    exec_hint = float(price_fn(symbol))
+
+    if context is not None and trades_path is not None:
+        ledger_qty, avg_cost = _compute_open_position_from_ledger(trades_path, symbol)
+
+    if abs(current_pos) <= 1e-9 and abs(ledger_qty) > 0:
+        current_pos = ledger_qty
+        if hasattr(br, "_pos") and isinstance(getattr(br, "_pos"), dict):  # pragma: no cover - sim specific
+            getattr(br, "_pos")[symbol] = ledger_qty
+
+    qty = abs(current_pos)
+    if qty <= 0:
+        return {
+            "symbol": symbol,
+            "qty": 0.0,
+            "exec_px": exec_hint,
+            "realized_pnl": None,
+        }
+
+    side = "sell" if current_pos > 0 else "buy"
+    fill = br.submit(Order(symbol, side, qty=float(qty), ref_price=exec_hint))
+
+    realized: float | None = None
+    if (
+        context is not None
+        and trades_path is not None
+        and context.live_cfg.adapter == "sim"
+        and abs(ledger_qty) >= qty
+        and avg_cost
+    ):
+        if current_pos > 0:
+            realized = (float(fill.price) - avg_cost) * qty
+        else:
+            realized = (avg_cost - float(fill.price)) * qty
+
+    if context is not None and trades_path is not None:
+        record_run_id = run_id or context.engine_cfg.get("run_id") or str(uuid.uuid4())
+        _record_fill(context, fill, trades_path, record_run_id)
+
+    return {
+        "symbol": symbol,
+        "qty": float(fill.qty),
+        "side": fill.side,
+        "exec_px": float(fill.price),
+        "realized_pnl": realized,
+    }
+
 
 
 def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> AlpacaClient:

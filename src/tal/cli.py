@@ -22,7 +22,13 @@ import yaml
 from tal import achievements, achievements_badges
 from tal.agents.registry import load_agent_config, to_engine_config
 from tal.backtest.engine import _load_config
-from tal.live.wrapper import _build_alpaca_client_from_env, _truthy, run_live_once
+from tal.live.wrapper import (
+    LiveCfg,
+    _build_alpaca_client_from_env,
+    _truthy,
+    run_live_loop,
+    run_live_once,
+)
 from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 from tal.orchestrator.day_night import run_loop
 from sqlalchemy import text
@@ -36,12 +42,14 @@ doctor_app = typer.Typer(help="Runtime diagnostics")
 achievements_app = typer.Typer(help="Fun, optional trading achievements")
 orders_app = typer.Typer(help="Inspect recent orders")
 ledger_app = typer.Typer(help="Inspect live trade ledger entries")
+live_app = typer.Typer(help="Live trading helpers", invoke_without_command=True)
 app.add_typer(agent_app, name="agent")
 app.add_typer(league_app, name="league")
 app.add_typer(doctor_app, name="doctor")
 app.add_typer(achievements_app, name="achievements")
 app.add_typer(orders_app, name="orders")
 app.add_typer(ledger_app, name="ledger")
+app.add_typer(live_app, name="live")
 
 
 def _fmt_float(value: Any) -> str:
@@ -49,6 +57,45 @@ def _fmt_float(value: Any) -> str:
         return f"{float(value):.2f}"
     except (TypeError, ValueError):
         return str(value)
+
+
+def _load_engine_config(config_path: str) -> dict[str, Any]:
+    from tal.backtest.engine import load_config
+
+    cfg, _ = load_config(config_path)
+    if isinstance(cfg.get("universe"), list) or "components" in cfg:
+        spec = load_agent_config(config_path)
+        return to_engine_config(spec)
+    return cfg
+
+
+def _resolve_live_achievement_mode(live_cfg: LiveCfg) -> Literal["paper", "real"]:
+    execute_flag = os.getenv("LIVE_EXECUTE", "0").lower()
+    execute_enabled = execute_flag in {"1", "true", "yes"}
+    broker_name = live_cfg.adapter
+    return "real" if broker_name == "alpaca" and execute_enabled else "paper"
+
+
+def _record_live_profit_if_needed(value: Any, live_cfg: LiveCfg) -> None:
+    if value is None:
+        return
+    profit_source = achievements.get_profit_source()
+    if profit_source not in {"live", "both"}:
+        return
+    try:
+        profit = float(value)
+    except (TypeError, ValueError):
+        return
+    if profit <= 0:
+        return
+    mode = _resolve_live_achievement_mode(live_cfg)
+    try:
+        unlocked = achievements.record_live_profit(mode, profit)
+    except Exception as exc:  # pragma: no cover - best effort logging
+        typer.echo(f"[achievements] error: {exc}", err=True)
+        return
+    if unlocked:
+        typer.echo(f"[achievements] unlocked: {', '.join(unlocked)}")
 
 
 @achievements_app.command("ls")
@@ -98,7 +145,12 @@ def achievements_status() -> None:
         typer.echo("Unlocked achievements: none yet.")
 
     next_map = achievements.next_thresholds(state)
-    source_labels = {"notional": "live", "profit": "eval"}
+    profit_source = achievements.get_profit_source()
+    profit_label = {"eval": "eval", "live": "live", "both": "eval+live"}.get(
+        profit_source,
+        "eval",
+    )
+    source_labels = {"notional": "live", "profit": profit_label}
     typer.echo("Next thresholds:")
     for track in ("notional", "profit"):
         track_info = next_map.get(track, {})
@@ -338,6 +390,9 @@ def doctor_alpaca(
     typer.echo(f"real_trading_enabled: {gate_enabled}")
     live_broker = os.environ.get("LIVE_BROKER", "alpaca_paper")
     typer.echo(f"live_broker: {live_broker}")
+    allow_env = os.environ.get("ALLOW_AFTER_HOURS")
+    allow_after_hours = _truthy(allow_env) if allow_env is not None else False
+    typer.echo(f"allow_after_hours: {allow_after_hours}")
     broker_key = live_broker.strip().lower()
     if broker_key == "alpaca_real" and not gate_enabled:
         typer.secho(
@@ -427,20 +482,73 @@ def backtest(config: str = "config/base.yaml") -> None:
     run_backtest(config)
 
 
-@app.command(name="live")
-def live_once(
-    config: str = typer.Option(..., "--config", help="Path to engine config YAML.")
+
+@live_app.callback()
+def live_entrypoint(
+    ctx: typer.Context,
+    config: str = typer.Option(..., "--config", help="Path to engine config YAML."),
+    loop: bool = typer.Option(
+        False,
+        "--loop/--no-loop",
+        help="Run repeated live steps until max-steps is reached.",
+        show_default=True,
+    ),
+    interval: float = typer.Option(
+        5.0,
+        "--interval",
+        help="Seconds to sleep between live steps when looping.",
+        show_default=True,
+    ),
+    max_steps: int = typer.Option(
+        60,
+        "--max-steps",
+        help="Maximum live steps to run when looping.",
+        show_default=True,
+    ),
+    flat_at_end: bool = typer.Option(
+        False,
+        "--flat-at-end/--no-flat-at-end",
+        help="Flatten any open position after the loop completes.",
+        show_default=True,
+    ),
 ) -> None:
-    """Execute one live step using the configured broker (paper by default)."""
+    """Run live trading once or as a loop, optionally flattening at the end."""
 
-    from tal.backtest.engine import load_config
+    if ctx.invoked_subcommand is not None:
+        return
 
-    cfg, _ = load_config(config)
-    if isinstance(cfg.get("universe"), list) or "components" in cfg:
-        spec = load_agent_config(config)
-        cfg = to_engine_config(spec)
-    res = run_live_once(cfg)
-    print(json.dumps(res, indent=2))
+    cfg = _load_engine_config(config)
+    live_cfg = LiveCfg(**cfg.get("live", {}))
+
+    if loop:
+        res = run_live_loop(
+            cfg,
+            max_steps=max_steps,
+            interval=interval,
+            flat_at_end=flat_at_end,
+        )
+        typer.echo(json.dumps(res, indent=2))
+        flatten = res.get("flatten")
+        if isinstance(flatten, dict):
+            _record_live_profit_if_needed(flatten.get("realized_pnl"), live_cfg)
+    else:
+        res = run_live_once(cfg)
+        typer.echo(json.dumps(res, indent=2))
+
+
+@live_app.command("close")
+def live_close(
+    config: str = typer.Option(..., "--config", help="Path to engine config YAML."),
+) -> None:
+    """Flatten the configured symbol position for the target broker."""
+
+    cfg = _load_engine_config(config)
+    live_cfg = LiveCfg(**cfg.get("live", {}))
+    res = run_live_loop(cfg, max_steps=0, interval=0.0, flat_at_end=True)
+    flatten = res.get("flatten")
+    typer.echo(json.dumps(flatten or {}, indent=2))
+    if isinstance(flatten, dict):
+        _record_live_profit_if_needed(flatten.get("realized_pnl"), live_cfg)
 
 
 @app.command(name="eval")
@@ -547,7 +655,8 @@ def evaluate(
     else:
         typer.echo(format_table(rows, group=group_key))
 
-    if pnl_dollars > 0:
+    profit_source = achievements.get_profit_source()
+    if pnl_dollars > 0 and profit_source in {"eval", "both"}:
         try:
             unlocked = achievements.record_profit_dollars(pnl_dollars, achievement_mode)
         except Exception as exc:  # pragma: no cover - best effort logging

@@ -102,6 +102,30 @@ live:
 When enabled the Alpaca paper client receives `extended_hours=true`, allowing
 tiny smoke trades even when the exchange is closed.
 
+`tal doctor alpaca` surfaces the effective flag so you can confirm your runtime
+environment before sending orders.
+
+### Live loop & flatten helpers
+
+Need to exercise a strategy over multiple live steps? Enable the loop runner and
+optionally flatten any leftover position at the end:
+
+```bash
+tal live --config config/live/alpaca_paper.yaml --loop --interval 2 --max-steps 30 --flat-at-end
+```
+
+To force-close the configured symbol on demand (paper, sim, or real—subject to
+the usual safety gates), use the dedicated flatten command:
+
+```bash
+tal live close --config config/live/alpaca_paper.yaml
+```
+
+Both paths record fills to the live ledger and database, making it easy to
+inspect round-trips with `tal ledger tail` or `tal orders tail`. The flatten
+path also reports realized PnL for the simulator, unlocking live profit badges
+when enabled.
+
 ## Configuration
 
 ### .env autoload
@@ -156,6 +180,10 @@ Unlock playful milestones as you trade—purely cosmetic but great for morale.
   thresholds by track.
 - Generate README flair with `tal achievements badges --readme README.md` (manual; not run in CI).
 - Colors: green badges are unlocked, grey badges are waiting on future wins.
+- Profit source is configurable via `ACHIEVEMENTS_PROFIT_SOURCE={eval|live|both}`
+  (default `eval`). Select `live` or `both` to unlock profit badges from
+  realized simulator/paper PnL (e.g., after a loop flatten).
+- Badge labels now end with `🔓` (unlocked) or `🔒` (locked) for quicker scanning.
 
 <!-- ACHIEVEMENTS:START -->
 <!-- ACHIEVEMENTS:END -->
