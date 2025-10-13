@@ -93,7 +93,10 @@ def render_badges_line(
     label_case: LabelCase = "lower",
     emojis: bool = False,
 ) -> str:
-    """Render all planned badges as a single Markdown line."""
+    """Render all planned badges as a single Markdown line.
+
+    Emojis are opt-in; pass ``emojis=True`` to append 🔓/🔒 markers to labels.
+    """
 
     validated_style = _validate_style(style)
     badges = [

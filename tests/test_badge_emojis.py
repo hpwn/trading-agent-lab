@@ -8,7 +8,8 @@ def test_badge_labels_include_emojis(monkeypatch, tmp_path):
     achievements.reset_achievements()
     achievements.record_trade_notional(5.0, "paper")
 
-    badges_line = achievements_badges.render_badges_line()
+    # Emojis are opt-in; enable them for this test.
+    badges_line = achievements_badges.render_badges_line(emojis=True)
 
     assert "🔓" in badges_line
     assert "🔒" in badges_line

@@ -5,7 +5,7 @@ import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, Mapping, SupportsFloat
+from typing import Any, Literal, Mapping, Optional, SupportsFloat
 
 # Autoload .env if present (do not override variables already exported)
 try:
@@ -35,7 +35,7 @@ from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 from tal.orchestrator.day_night import run_loop
 from sqlalchemy import text
 
-from typer import Context, Option, Typer
+from typer import BadParameter, Context, Option, Typer
 
 from tal.storage.db import fetch_metrics_for_runs, fetch_runs_since, get_engine
 
@@ -503,7 +503,11 @@ def backtest(config: str = "config/base.yaml") -> None:
 @live_app.callback()
 def live_entrypoint(
     ctx: Context,
-    config: str = Option(..., "--config", help="Path to engine config YAML."),
+    config: Optional[str] = Option(
+        None,
+        "--config",
+        help="Path to engine config YAML.",
+    ),
     loop: bool = Option(
         False,
         "--loop/--no-loop",
@@ -533,6 +537,9 @@ def live_entrypoint(
 
     if ctx.invoked_subcommand is not None:
         return
+
+    if not config:
+        raise BadParameter("Missing --config for live run")
 
     cfg = _load_engine_config(config)
     live_cfg = LiveCfg(**cfg.get("live", {}))

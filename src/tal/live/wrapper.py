@@ -522,6 +522,9 @@ def flatten_symbol(
         ledger_qty, _ = _compute_open_position_from_ledger(trades_path, symbol)
         if abs(ledger_qty) > 1e-9:
             current_pos = ledger_qty
+            pos_attr = getattr(br, "_pos", None)
+            if isinstance(pos_attr, dict):
+                pos_attr[str(symbol)] = float(ledger_qty)
 
     if abs(current_pos) <= 1e-9:
         return {
