@@ -151,6 +151,8 @@ def _build_history_map(
 
 def _prepare_runtime_context(engine_cfg: dict[str, Any]) -> _RuntimeContext:
     live_cfg = LiveCfg(**engine_cfg.get("live", {}))
+    if _truthy(os.getenv("ALLOW_AFTER_HOURS")) and not live_cfg.allow_after_hours:
+        live_cfg.allow_after_hours = True
     ledger_dir = Path(live_cfg.ledger_dir)
     trades_path = _ensure_ledger(ledger_dir)
     symbols = _resolve_symbols(engine_cfg, live_cfg)

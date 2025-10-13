@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 Mode = Literal["paper", "real"]
+MODES: tuple[Mode, Mode] = ("paper", "real")
 ProfitSource = Literal["eval", "live", "both"]
 
 
@@ -225,7 +226,7 @@ def next_thresholds(state: dict[str, Any] | None = None) -> dict[str, dict[Mode,
     for track, values in thresholds.items():
         kind = "trade" if track == "notional" else "profit"
         track_map: dict[Mode, float | None] = {"paper": None, "real": None}
-        for mode in ("paper", "real"):
+        for mode in MODES:
             next_value: float | None = None
             for threshold in values:
                 key = _achievement_key(kind, threshold, mode)
@@ -283,8 +284,7 @@ def all_planned_badge_keys() -> list[str]:
     """Return the canonical list of badge keys across modes."""
 
     keys: list[str] = []
-    for is_real in (False, True):
-        mode: Mode = "real" if is_real else "paper"
+    for mode in MODES:
         for threshold in _NOTIONAL_THRESHOLDS:
             keys.append(_achievement_key("trade", threshold, mode))
         for threshold in _PROFIT_THRESHOLDS:
