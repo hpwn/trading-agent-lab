@@ -5,7 +5,7 @@ import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, Mapping, Optional, SupportsFloat
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional, SupportsFloat
 from types import SimpleNamespace
 
 # Autoload .env if present (do not override variables already exported)
@@ -32,6 +32,9 @@ from tal.live.wrapper import (
     run_live_once,
 )
 from tal.live import wrapper as _live_wrapper
+
+if TYPE_CHECKING:
+    from tal.live.wrapper import AlpacaClient as _AlpacaClient
 from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 from tal.orchestrator.day_night import run_loop
 from sqlalchemy import text
@@ -41,7 +44,7 @@ from typer import BadParameter, Context, Option, Typer
 from tal.storage.db import fetch_metrics_for_runs, fetch_runs_since, get_engine
 
 
-def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None):
+def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> "_AlpacaClient":
     """Helper indirection layer so tests can monkeypatch Alpaca client construction."""
 
     return _live_wrapper._build_alpaca_client_from_env(paper=paper, base_url=base_url)
