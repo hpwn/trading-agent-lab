@@ -384,6 +384,12 @@ def doctor_alpaca(
         "--base-url",
         help="Override the Alpaca trading API base URL.",
     ),
+    strict: bool = typer.Option(
+        False,
+        "--strict/--no-strict",
+        help="Return non-zero for recoverable issues (defaults to informational-only).",
+        show_default=True,
+    ),
 ) -> None:
     """Validate Alpaca credentials and basic account connectivity."""
 
@@ -392,13 +398,17 @@ def doctor_alpaca(
     if missing:
         for key in missing:
             typer.echo(f"[doctor] missing environment variable: {key}", err=True)
-        raise typer.Exit(code=1)
+        if strict:
+            raise typer.Exit(code=1)
+        return
 
     try:
         client = _build_alpaca_client_from_env(paper=paper, base_url=base_url)
     except Exception as exc:  # pragma: no cover - exercised via tests with stubs
         typer.echo(f"[doctor] failed to initialize Alpaca client: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+        if strict:
+            raise typer.Exit(code=1) from exc
+        return
 
     feed_hint = os.environ.get("ALPACA_FEED")
 
