@@ -6,6 +6,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Mapping, Optional, SupportsFloat
+from types import SimpleNamespace
 
 # Autoload .env if present (do not override variables already exported)
 try:
@@ -107,6 +108,28 @@ def _maybe_record_live_profit(result: Mapping[str, Any] | None, live_cfg: LiveCf
         return
     if unlocked:
         typer.echo(f"[achievements] unlocked: {', '.join(unlocked)}")
+
+
+def _load_config_for_doctor(*, live: bool) -> dict[str, Any]:
+    """Load a live engine config for doctor guidance."""
+
+    config_path = os.environ.get("TAL_LIVE_CONFIG")
+    if config_path:
+        path = Path(config_path)
+    else:
+        filename = "alpaca_real.yaml" if live else "alpaca_paper.yaml"
+        path = Path("config/live") / filename
+    data = yaml.safe_load(path.read_text())
+    return data or {}
+
+
+def _build_live_cfg(cfg: Mapping[str, Any]) -> LiveCfg:
+    """Construct a ``LiveCfg`` from a config mapping."""
+
+    live_section = cfg.get("live", {})
+    if not isinstance(live_section, Mapping):
+        live_section = {}
+    return LiveCfg(**live_section)
 
 
 @achievements_app.command("ls")
@@ -416,44 +439,58 @@ def doctor_alpaca(
     allow_after_hours = _truthy(allow_env) if allow_env is not None else False
     typer.echo(f"allow_after_hours: {allow_after_hours}")
 
-    def _emit_cap_guidance() -> None:
-        cap_env_raw = os.environ.get("LIVE_MAX_ORDER_USD")
-        cap_disabled = False
-        cap_override: float | None = None
-        if cap_env_raw is not None:
-            lowered = cap_env_raw.strip().lower()
-            if lowered in {"", "none", "null"}:
-                cap_disabled = True
-            else:
-                try:
-                    cap_override = float(cap_env_raw)
-                except ValueError:
-                    cap_override = None
-
-        if latest_price is not None:
-            if cap_override is not None and latest_price > cap_override:
-                suggested = max(latest_price * 1.1, cap_override + 1)
-                typer.echo(
-                    "[hint] Latest price ${0:.2f} exceeds max_order_usd ${1:.2f}.\n"
-                    "       export LIVE_MAX_ORDER_USD={2:.0f} or set CLIP_ORDER_TO_MAX=1".format(
-                        latest_price, cap_override, suggested
-                    )
-                )
-            elif not cap_disabled:
-                default_cap = 5.0
-                if cap_override is None and latest_price > default_cap:
-                    typer.echo(
-                        "[hint] Default max_order_usd is $5.00; {sym} trades near ${px:.2f}.\n"
-                        "       export LIVE_MAX_ORDER_USD=10000 or set CLIP_ORDER_TO_MAX=1"
-                        .format(sym=symbol_upper, px=latest_price)
-                    )
-
     if not market_open and not allow_after_hours:
-        typer.echo("[hint] Market is closed. To trade after-hours on paper:\n       export ALLOW_AFTER_HOURS=1")
-        _emit_cap_guidance()
+        typer.echo("[hint] Market is closed. To trade after-hours on paper: export ALLOW_AFTER_HOURS=1")
         raise typer.Exit(code=0)
 
-    _emit_cap_guidance()
+    live_cfg_obj: LiveCfg | SimpleNamespace
+    try:
+        cfg = _load_config_for_doctor(live=not paper)
+        live_cfg_obj = _build_live_cfg(cfg)
+    except Exception:
+        typer.echo("[hint] Using default guidance (could not read live config).")
+        max_env = os.environ.get("LIVE_MAX_ORDER_USD")
+        max_value: float | None = None
+        if max_env is not None:
+            lowered = max_env.strip().lower()
+            if lowered not in {"", "none", "null"}:
+                try:
+                    max_value = float(max_env)
+                except ValueError:
+                    max_value = None
+        live_cfg_obj = SimpleNamespace(cash=10_000.0, size_pct=5.0, max_order_usd=max_value)
+
+    try:
+        cash_val = float(getattr(live_cfg_obj, "cash", 10_000.0) or 10_000.0)
+    except (TypeError, ValueError):
+        cash_val = 10_000.0
+    raw_size_pct = getattr(live_cfg_obj, "size_pct", 5.0)
+    try:
+        size_pct_val = float(raw_size_pct) if raw_size_pct is not None else 5.0
+    except (TypeError, ValueError):
+        size_pct_val = 5.0
+    max_order = getattr(live_cfg_obj, "max_order_usd", None)
+    cap_env = os.environ.get("LIVE_MAX_ORDER_USD")
+    if cap_env is not None:
+        lowered = cap_env.strip().lower()
+        if lowered in {"", "none", "null"}:
+            max_order = None
+        else:
+            try:
+                max_order = float(cap_env)
+            except ValueError:
+                pass
+
+    if latest_price is not None:
+        est_dollars = cash_val * (size_pct_val / 100.0)
+        est_qty = int(est_dollars // max(latest_price, 1e-9))
+        est_notional = est_qty * latest_price
+        if max_order is not None and est_notional > max_order:
+            typer.echo(
+                f"[hint] Estimated order ${est_notional:0.2f} exceeds max_order_usd ${max_order:0.2f}. "
+                "Bump YAML, export LIVE_MAX_ORDER_USD=10000, or export CLIP_ORDER_TO_MAX=1."
+            )
+
     broker_key = live_broker.strip().lower()
     if broker_key == "alpaca_real" and not gate_enabled:
         typer.secho(
