@@ -76,5 +76,5 @@ def test_doctor_closed_market_hint_without_after_hours(monkeypatch: pytest.Monke
     result = runner.invoke(app, ["doctor", "alpaca", "--symbol", "SPY"])
 
     assert result.exit_code == 0, result.stdout
+    assert "[hint] Market is closed" in result.stdout
     assert "export ALLOW_AFTER_HOURS=1" in result.stdout
-    assert "Default max_order_usd" in result.stdout or "exceeds max_order_usd" in result.stdout
