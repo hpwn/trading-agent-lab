@@ -402,8 +402,14 @@ def doctor_alpaca(
 
     feed_hint = os.environ.get("ALPACA_FEED")
 
+    market_open: bool | None = None
     try:
         market_open = bool(client.is_market_open())
+        typer.echo(f"market_open: {market_open}")
+    except Exception:
+        typer.echo("market_open: unavailable")
+
+    try:
         account = client.get_account() or {}
         cash = _fmt_float(account.get("cash", 0.0))
         equity = _fmt_float(account.get("equity", account.get("portfolio_value", 0.0)))
@@ -414,20 +420,23 @@ def doctor_alpaca(
             or account.get("equity")
         )
         buying_power = _fmt_float(buying_power_val) if buying_power_val is not None else "n/a"
-        latest_price_data = client.get_last_price(symbol)
-        try:
-            latest_price = float(latest_price_data)
-        except (TypeError, ValueError):
-            latest_price = None
-        price = _fmt_float(latest_price_data)
-    except Exception as exc:  # pragma: no cover - depends on runtime client
-        typer.echo(f"[doctor] runtime check failed: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+        typer.echo(f"account: cash={cash} equity={equity} buying_power={buying_power}")
+    except Exception:
+        typer.echo("account: unavailable")
 
-    symbol_upper = symbol.upper()
-    typer.echo(f"market_open: {market_open}")
-    typer.echo(f"account: cash={cash} equity={equity} buying_power={buying_power}")
-    typer.echo(f"latest_price[{symbol_upper}]: {price}")
+    latest_price: Optional[float] = None
+    if symbol:
+        try:
+            latest_price_data = client.get_last_price(symbol)
+            try:
+                latest_price = float(latest_price_data)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                latest_price = None
+            price = _fmt_float(latest_price_data)
+            typer.echo(f"latest_price[{symbol.upper()}]: {price}")
+        except Exception:
+            typer.echo(f"latest_price[{symbol.upper()}]: unavailable")
+
     if feed_hint:
         typer.echo(f"feed_hint: {feed_hint.lower()}")
 
@@ -435,13 +444,12 @@ def doctor_alpaca(
     typer.echo(f"real_trading_enabled: {gate_enabled}")
     live_broker = os.environ.get("LIVE_BROKER", "alpaca_paper")
     typer.echo(f"live_broker: {live_broker}")
-    allow_env = os.environ.get("ALLOW_AFTER_HOURS")
-    allow_after_hours = _truthy(allow_env) if allow_env is not None else False
+    allow_after_hours = _truthy(os.environ.get("ALLOW_AFTER_HOURS"))
     typer.echo(f"allow_after_hours: {allow_after_hours}")
 
-    if not market_open and not allow_after_hours:
+    if market_open is False and not allow_after_hours:
         typer.echo("[hint] Market is closed. To trade after-hours on paper: export ALLOW_AFTER_HOURS=1")
-        raise typer.Exit(code=0)
+        return
 
     live_cfg_obj: LiveCfg | SimpleNamespace
     try:
@@ -498,7 +506,7 @@ def doctor_alpaca(
             fg="red",
         )
 
-    raise typer.Exit(code=0)
+    return
 
 
 @agent_app.command("backtest")
