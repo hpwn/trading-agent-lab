@@ -82,6 +82,7 @@ class LiveCfg(BaseModel):
     base_url: Optional[str] = None
     symbol: Optional[str] = None
     size_pct: Optional[float] = None
+    allow_after_hours: bool = False
 
     @model_validator(mode="before")
     @classmethod
