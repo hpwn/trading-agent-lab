@@ -429,11 +429,13 @@ def doctor_alpaca(
         try:
             latest_price_data = client.get_last_price(symbol)
             try:
-                latest_price = float(latest_price_data)  # type: ignore[arg-type]
+                latest_price = float(latest_price_data)
             except (TypeError, ValueError):
                 latest_price = None
-            price = _fmt_float(latest_price_data)
-            typer.echo(f"latest_price[{symbol.upper()}]: {price}")
+            if latest_price is not None:
+                typer.echo(f"latest_price[{symbol.upper()}]: {latest_price:.2f}")
+            else:
+                typer.echo(f"latest_price[{symbol.upper()}]: {latest_price_data}")
         except Exception:
             typer.echo(f"latest_price[{symbol.upper()}]: unavailable")
 
