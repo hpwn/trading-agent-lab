@@ -365,6 +365,18 @@ def ledger_tail(
         typer.echo(
             f"{epoch:<20} {iso_ts:<24} {symbol:<6} {side:<4} {qty:<6} {price:<6}"
         )
+
+
+def _emit_closed_market_hint(allow_after_hours: bool) -> None:
+    """Emit the closed-market hint to STDOUT (tests depend on exact text)."""
+
+    if not allow_after_hours:
+        typer.echo(
+            "[hint] Market is closed. To trade after-hours on paper: export ALLOW_AFTER_HOURS=1",
+            err=False,
+        )
+
+
 @doctor_app.command("alpaca")
 def doctor_alpaca(
     symbol: str = typer.Option(
@@ -405,7 +417,7 @@ def doctor_alpaca(
     try:
         client = _build_alpaca_client_from_env(paper=paper, base_url=base_url)
     except Exception as exc:  # pragma: no cover - exercised via tests with stubs
-        typer.echo(f"[doctor] failed to initialize Alpaca client: {exc}", err=True)
+        typer.echo(f"[doctor] failed to initialize Alpaca client: {exc}", err=False)
         if strict:
             raise typer.Exit(code=1) from exc
         return
@@ -415,9 +427,9 @@ def doctor_alpaca(
     market_open: bool | None = None
     try:
         market_open = bool(client.is_market_open())
-        typer.echo(f"market_open: {market_open}")
+        typer.echo(f"market_open: {market_open}", err=False)
     except Exception:
-        typer.echo("market_open: unavailable")
+        typer.echo("market_open: unavailable", err=False)
 
     try:
         account = client.get_account() or {}
@@ -430,9 +442,12 @@ def doctor_alpaca(
             or account.get("equity")
         )
         buying_power = _fmt_float(buying_power_val) if buying_power_val is not None else "n/a"
-        typer.echo(f"account: cash={cash} equity={equity} buying_power={buying_power}")
+        typer.echo(
+            f"account: cash={cash} equity={equity} buying_power={buying_power}",
+            err=False,
+        )
     except Exception:
-        typer.echo("account: unavailable")
+        typer.echo("account: unavailable", err=False)
 
     latest_price: Optional[float] = None
     if symbol:
@@ -443,24 +458,25 @@ def doctor_alpaca(
             except (TypeError, ValueError):
                 latest_price = None
             if latest_price is not None:
-                typer.echo(f"latest_price[{symbol.upper()}]: {latest_price:.2f}")
+                typer.echo(f"latest_price[{symbol.upper()}]: {latest_price:.2f}", err=False)
             else:
-                typer.echo(f"latest_price[{symbol.upper()}]: {latest_price_data}")
+                typer.echo(f"latest_price[{symbol.upper()}]: {latest_price_data}", err=False)
         except Exception:
-            typer.echo(f"latest_price[{symbol.upper()}]: unavailable")
+            typer.echo(f"latest_price[{symbol.upper()}]: unavailable", err=False)
 
     if feed_hint:
-        typer.echo(f"feed_hint: {feed_hint.lower()}")
+        typer.echo(f"feed_hint: {feed_hint.lower()}", err=False)
 
     gate_enabled = _truthy(os.environ.get("REAL_TRADING_ENABLED"))
-    typer.echo(f"real_trading_enabled: {gate_enabled}")
+    typer.echo(f"real_trading_enabled: {gate_enabled}", err=False)
     live_broker = os.environ.get("LIVE_BROKER", "alpaca_paper")
-    typer.echo(f"live_broker: {live_broker}")
+    typer.echo(f"live_broker: {live_broker}", err=False)
     allow_after_hours = _truthy(os.environ.get("ALLOW_AFTER_HOURS"))
-    typer.echo(f"allow_after_hours: {allow_after_hours}")
+    typer.echo(f"allow_after_hours: {allow_after_hours}", err=False)
 
     if market_open is False and not allow_after_hours:
-        typer.echo("[hint] Market is closed. To trade after-hours on paper: export ALLOW_AFTER_HOURS=1")
+        _emit_closed_market_hint(allow_after_hours)
+        typer.echo("[doctor] info-only; no trades placed.", err=False)
         return
 
     live_cfg_obj: LiveCfg | SimpleNamespace
@@ -468,7 +484,7 @@ def doctor_alpaca(
         cfg = _load_config_for_doctor(live=not paper)
         live_cfg_obj = _build_live_cfg(cfg)
     except Exception:
-        typer.echo("[hint] Using default guidance (could not read live config).")
+        typer.echo("[hint] Using default guidance (could not read live config).", err=False)
         max_env = os.environ.get("LIVE_MAX_ORDER_USD")
         max_value: float | None = None
         if max_env is not None:
@@ -508,7 +524,8 @@ def doctor_alpaca(
         if max_order is not None and est_notional > max_order:
             typer.echo(
                 f"[hint] Estimated order ${est_notional:0.2f} exceeds max_order_usd ${max_order:0.2f}. "
-                "Bump YAML, export LIVE_MAX_ORDER_USD=10000, or export CLIP_ORDER_TO_MAX=1."
+                "Bump YAML, export LIVE_MAX_ORDER_USD=10000, or export CLIP_ORDER_TO_MAX=1.",
+                err=False,
             )
 
     broker_key = live_broker.strip().lower()
