@@ -25,13 +25,13 @@ from tal.agents.registry import load_agent_config, to_engine_config
 from tal.backtest.engine import _load_config
 from tal.live.wrapper import (
     LiveCfg,
-    _build_alpaca_client_from_env,
     _truthy,
     build_broker_and_price_fn,
     flatten_symbol,
     run_live_loop,
     run_live_once,
 )
+from tal.live import wrapper as _live_wrapper
 from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 from tal.orchestrator.day_night import run_loop
 from sqlalchemy import text
@@ -39,6 +39,12 @@ from sqlalchemy import text
 from typer import BadParameter, Context, Option, Typer
 
 from tal.storage.db import fetch_metrics_for_runs, fetch_runs_since, get_engine
+
+
+def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None):
+    """Helper indirection layer so tests can monkeypatch Alpaca client construction."""
+
+    return _live_wrapper._build_alpaca_client_from_env(paper=paper, base_url=base_url)
 
 app = Typer(help="Trading Agent Lab (CLI only)")
 agent_app = Typer(help="Agent-specific commands")
@@ -418,6 +424,10 @@ def doctor_alpaca(
         client = _build_alpaca_client_from_env(paper=paper, base_url=base_url)
     except Exception as exc:  # pragma: no cover - exercised via tests with stubs
         typer.echo(f"[doctor] failed to initialize Alpaca client: {exc}", err=False)
+        allow_after_hours = _truthy(os.environ.get("ALLOW_AFTER_HOURS"))
+        if not allow_after_hours:
+            _emit_closed_market_hint(allow_after_hours)
+            typer.echo("[doctor] info-only; no trades placed.", err=False)
         if strict:
             raise typer.Exit(code=1) from exc
         return
