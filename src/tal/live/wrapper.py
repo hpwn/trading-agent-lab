@@ -25,6 +25,18 @@ def _truthy(value: str | None) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _execution_enabled(live_cfg: LiveCfg) -> bool:
+    """Return whether live persistence/side effects should run."""
+
+    execute_attr = getattr(live_cfg, "execute", None)
+    if isinstance(execute_attr, bool):
+        return execute_attr
+    env_flag = os.getenv("LIVE_EXECUTE")
+    if env_flag is not None:
+        return _truthy(env_flag)
+    return True
+
+
 def _resolve_module(name: str) -> Any:
     """Load a module while honoring pre-stubbed entries in ``sys.modules``."""
 
@@ -236,7 +248,7 @@ def _record_fill(
 ) -> None:
     event_ts = datetime.now(timezone.utc)
     _append_trade(trades_path, fill, ts=event_ts)
-    if context.db_engine is not None:
+    if context.db_engine is not None and _execution_enabled(context.live_cfg):
         broker_order_id = getattr(fill, "broker_order_id", None)
         record_order(
             context.db_engine,
@@ -426,7 +438,7 @@ def _execute_step(
     if fill:
         _record_fill(context, fill, context.trades_path, run_id)
 
-    if context.db_engine is not None:
+    if context.db_engine is not None and _execution_enabled(context.live_cfg):
         record_run(
             context.db_engine,
             {

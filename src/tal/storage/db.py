@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import enum
+import uuid
+
 from typing import Any, Iterable, Mapping, Optional, Sequence, cast
 
 from sqlalchemy import bindparam, create_engine, text
@@ -117,6 +120,16 @@ def init_db(engine: SAEngine) -> None:
             conn.execute(text(statement))
 
 
+def _coerce_scalar(value: Any) -> Any:
+    """Convert complex scalar types into SQLite-friendly primitives."""
+
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, enum.Enum):
+        return value.value
+    return value
+
+
 def upsert_agent(engine: SAEngine, agent: Mapping[str, Any]) -> None:
     agent_id = str(agent.get("id") or agent.get("agent_id") or "")
     meta_obj = agent.get("metadata")
@@ -188,6 +201,16 @@ def record_run(
             agent_info = agent_data
     if agent_info:
         upsert_agent(engine, agent_info)
+    row = {key: _coerce_scalar(val) for key, val in run_row.items()}
+    metrics_payload = [
+        {key: _coerce_scalar(val) for key, val in metric.items()}
+        for metric in metrics_rows
+    ]
+    trades_payload = [
+        {key: _coerce_scalar(val) for key, val in trade.items()}
+        for trade in trades_rows
+    ]
+
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -199,9 +222,9 @@ def record_run(
                 )
                 """
             ),
-            run_row,
+            row,
         )
-        if metrics_rows:
+        if metrics_payload:
             conn.execute(
                 text(
                     """
@@ -209,9 +232,9 @@ def record_run(
                     VALUES (:run_id, :name, :value)
                     """
                 ),
-                metrics_rows,
+                metrics_payload,
             )
-        if trades_rows:
+        if trades_payload:
             conn.execute(
                 text(
                     """
@@ -219,7 +242,7 @@ def record_run(
                     VALUES (:run_id, :ts, :symbol, :side, :qty, :price, :pnl)
                     """
                 ),
-                trades_rows,
+                trades_payload,
             )
 
 
@@ -251,6 +274,8 @@ def record_order(engine: SAEngine, order: Mapping[str, Any]) -> None:
         "broker_order_id": order.get("broker_order_id"),
         "status": order.get("status"),
     }
+
+    row = {key: _coerce_scalar(val) for key, val in row.items()}
 
     with engine.begin() as conn:
         conn.execute(
