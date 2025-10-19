@@ -76,13 +76,79 @@ Even if you set `LIVE_BROKER=alpaca_real`, the lab refuses to send real orders
 unless you also set `REAL_TRADING_ENABLED=true`. This environment flag must be
 deliberately enabled before any real broker session can start.
 
-Use `tal doctor alpaca` to confirm your setup:
+Use `tal doctor alpaca` to confirm your setup. The doctor is informational-only:
+it never places orders and exits successfully even when the market is closed,
+printing hints instead of raising errors.
 
 - `live_broker: alpaca_real`
 - `real_trading_enabled: True`
 
 Leave `REAL_TRADING_ENABLED` unset during day-to-day development to keep the
 paper/simulator paths safe by default.
+
+### Paper after-hours (opt-in)
+
+Paper sessions now support an explicit after-hours toggle. Set
+`allow_after_hours: true` under the `live:` block of your config (for example
+`config/live/alpaca_paper.yaml`) to opt into extended-hours routing when the
+market is closed. Orders remain paper-only by default and still respect the
+`REAL_TRADING_ENABLED` gate when pointing at real brokers.
+
+```yaml
+live:
+  adapter: "alpaca"
+  paper: true
+  allow_after_hours: true
+```
+
+When enabled the Alpaca paper client receives `extended_hours=true`, allowing
+tiny smoke trades even when the exchange is closed. Alpaca requires these
+extended-hours orders to be **DAY + LIMIT**, so the broker sets a protective
+limit around the quoted price while continuing to use MARKET orders during
+regular hours.
+
+You can also flip after-hours per run with `ALLOW_AFTER_HOURS=1 tal live --config
+config/live/alpaca_paper.yaml`; the CLI honors this environment variable even if
+your YAML omits `allow_after_hours:`.
+
+`tal doctor alpaca` surfaces the effective flag so you can confirm your runtime
+environment before sending orders.
+
+**Local smoke in a closed market**
+
+```bash
+export ALLOW_AFTER_HOURS=1
+export LIVE_MAX_ORDER_USD=10000  # or 'none' to disable the guardrail entirely
+tal live --config config/live/alpaca_paper.yaml
+tal orders tail --limit 3
+```
+
+Optional: automatically downsize instead of erroring when the cap is tight:
+
+```bash
+export CLIP_ORDER_TO_MAX=1
+```
+
+### Live loop & flatten helpers
+
+Need to exercise a strategy over multiple live steps? Enable the loop runner and
+optionally flatten any leftover position at the end:
+
+```bash
+tal live --config config/live/alpaca_paper.yaml --loop --interval 2 --max-steps 30 --flat-at-end
+```
+
+To force-close the configured symbol on demand (paper, sim, or real—subject to
+the usual safety gates), use the dedicated flatten command:
+
+```bash
+tal live close --config config/live/alpaca_paper.yaml
+```
+
+Both paths record fills to the live ledger and database, making it easy to
+inspect round-trips with `tal ledger tail` or `tal orders tail`. The flatten
+path also reports realized PnL for the simulator, unlocking live profit badges
+when enabled.
 
 ## Configuration
 
@@ -134,8 +200,15 @@ Unlock playful milestones as you trade—purely cosmetic but great for morale.
 - First $1/$10/$100/$1000 profit milestones converted from PnL.
 - Artifacts live under `artifacts/achievements/` (state, NDJSON log, badge files).
 - CLI helpers: `tal achievements ls` and `tal achievements reset --yes`.
+- Progress snapshot: `tal achievements status` lists unlocked keys and upcoming
+  thresholds by track.
 - Generate README flair with `tal achievements badges --readme README.md` (manual; not run in CI).
 - Colors: green badges are unlocked, grey badges are waiting on future wins.
+- Profit source is configurable via `ACHIEVEMENTS_PROFIT_SOURCE={eval|live|both}`
+  (default `eval`). Select `live` or `both` to unlock profit badges from
+  realized simulator/paper PnL (e.g., after a loop flatten).
+- Pass `--emojis` to `tal achievements badges` to append `🔓`/`🔒` markers to labels
+  without changing the legacy defaults.
 
 <!-- ACHIEVEMENTS:START -->
 <!-- ACHIEVEMENTS:END -->
@@ -169,6 +242,13 @@ tal league nightly --config config/base.yaml
 `league.artifacts_dir`. The nightly command loads recent performance from the
 shared SQLite database, aggregates metrics, and writes promotion/retirement
 recommendations to `artifacts/league/allocations.json`.
+
+Inspect recent activity without cracking open the database manually:
+
+```bash
+tal orders tail --limit 10
+tal ledger tail --limit 5
+```
 
 Each agent specification now captures provenance metadata (`builder` and
 `lineage` blocks). This information is persisted in the `agents` table whenever

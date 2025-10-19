@@ -1,10 +1,34 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional, Protocol
 
 from ..base import Broker
-from .alpaca import AlpacaBroker, AlpacaClient
-from .sim import SimBroker, SimMarketData
+
+
+class AlpacaClient(Protocol):
+    def get_last_price(self, symbol: str) -> float: ...
+
+    def is_market_open(self) -> bool: ...
+
+    def submit_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: float,
+        type: str = "market",
+        time_in_force: str = "day",
+        limit_price: Optional[float] = None,
+        extended_hours: Optional[bool] = None,
+    ) -> Any: ...
+
+    def get_account(self) -> dict: ...
+
+    def get_position(self, symbol: str) -> float: ...
+
+
+from .alpaca import AlpacaBroker  # noqa: E402
+from .sim import SimBroker, SimMarketData  # noqa: E402
 
 
 def build_broker(

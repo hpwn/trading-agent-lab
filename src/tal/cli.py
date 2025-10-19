@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, SupportsFloat
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional, SupportsFloat
+from types import SimpleNamespace
 
 # Autoload .env if present (do not override variables already exported)
 try:
@@ -21,20 +23,51 @@ import yaml
 from tal import achievements, achievements_badges
 from tal.agents.registry import load_agent_config, to_engine_config
 from tal.backtest.engine import _load_config
-from tal.live.wrapper import _build_alpaca_client_from_env, _truthy, run_live_once
+from tal.live.wrapper import (
+    LiveCfg,
+    _truthy,
+    build_broker_and_price_fn,
+    flatten_symbol,
+    run_live_loop,
+    run_live_once,
+)
+from tal.live import wrapper as _live_wrapper
+
+if TYPE_CHECKING:
+    from tal.live.wrapper import AlpacaClient as _AlpacaClient
 from tal.league.manager import LeagueCfg, live_step_all, nightly_eval
 from tal.orchestrator.day_night import run_loop
+from sqlalchemy import text
+
+from typer import BadParameter, Context, Option, Typer
+
 from tal.storage.db import fetch_metrics_for_runs, fetch_runs_since, get_engine
 
-app = typer.Typer(help="Trading Agent Lab (CLI only)")
-agent_app = typer.Typer(help="Agent-specific commands")
-league_app = typer.Typer(help="League manager: multi-agent live & nightly eval")
-doctor_app = typer.Typer(help="Runtime diagnostics")
-achievements_app = typer.Typer(help="Fun, optional trading achievements")
+
+def _build_alpaca_client_from_env(*, paper: bool, base_url: str | None) -> "_AlpacaClient":
+    """Helper indirection layer so tests can monkeypatch Alpaca client construction."""
+
+    return _live_wrapper._build_alpaca_client_from_env(paper=paper, base_url=base_url)
+
+app = Typer(help="Trading Agent Lab (CLI only)")
+agent_app = Typer(help="Agent-specific commands")
+league_app = Typer(help="League manager: multi-agent live & nightly eval")
+doctor_app = Typer(help="Runtime diagnostics")
+achievements_app = Typer(help="Fun, optional trading achievements")
+orders_app = Typer(help="Inspect recent orders")
+ledger_app = Typer(help="Inspect live trade ledger entries")
+live_app = Typer(
+    help="Live trading helpers",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
 app.add_typer(agent_app, name="agent")
 app.add_typer(league_app, name="league")
 app.add_typer(doctor_app, name="doctor")
 app.add_typer(achievements_app, name="achievements")
+app.add_typer(orders_app, name="orders")
+app.add_typer(ledger_app, name="ledger")
+app.add_typer(live_app, name="live")
 
 
 def _fmt_float(value: Any) -> str:
@@ -42,6 +75,70 @@ def _fmt_float(value: Any) -> str:
         return f"{float(value):.2f}"
     except (TypeError, ValueError):
         return str(value)
+
+
+def _load_engine_config(config_path: str) -> dict[str, Any]:
+    from tal.backtest.engine import load_config
+
+    cfg, _ = load_config(config_path)
+    if isinstance(cfg.get("universe"), list) or "components" in cfg:
+        spec = load_agent_config(config_path)
+        return to_engine_config(spec)
+    return cfg
+
+
+def _resolve_live_achievement_mode(live_cfg: LiveCfg) -> Literal["paper", "real"]:
+    execute_flag = os.getenv("LIVE_EXECUTE", "0").lower()
+    execute_enabled = execute_flag in {"1", "true", "yes"}
+    broker_name = live_cfg.adapter
+    return "real" if broker_name == "alpaca" and execute_enabled else "paper"
+
+
+def _maybe_record_live_profit(result: Mapping[str, Any] | None, live_cfg: LiveCfg) -> None:
+    if not result:
+        return
+    value = result.get("realized_pnl")
+    if value is None:
+        return
+    profit_source = achievements.get_profit_source()
+    if profit_source not in {"live", "both"}:
+        return
+    try:
+        profit = float(value)
+    except (TypeError, ValueError):
+        return
+    if profit <= 0:
+        return
+    mode = _resolve_live_achievement_mode(live_cfg)
+    try:
+        unlocked = achievements.record_live_profit(mode, profit)
+    except Exception as exc:  # pragma: no cover - best effort logging
+        typer.echo(f"[achievements] error: {exc}", err=True)
+        return
+    if unlocked:
+        typer.echo(f"[achievements] unlocked: {', '.join(unlocked)}")
+
+
+def _load_config_for_doctor(*, live: bool) -> dict[str, Any]:
+    """Load a live engine config for doctor guidance."""
+
+    config_path = os.environ.get("TAL_LIVE_CONFIG")
+    if config_path:
+        path = Path(config_path)
+    else:
+        filename = "alpaca_real.yaml" if live else "alpaca_paper.yaml"
+        path = Path("config/live") / filename
+    data = yaml.safe_load(path.read_text())
+    return data or {}
+
+
+def _build_live_cfg(cfg: Mapping[str, Any]) -> LiveCfg:
+    """Construct a ``LiveCfg`` from a config mapping."""
+
+    live_section = cfg.get("live", {})
+    if not isinstance(live_section, Mapping):
+        live_section = {}
+    return LiveCfg(**live_section)
 
 
 @achievements_app.command("ls")
@@ -61,6 +158,49 @@ def achievements_ls() -> None:
                 entries.append(entry)
     entries.sort(key=lambda item: str(item.get("ts", "")))
     typer.echo(json.dumps(entries, indent=2, sort_keys=True))
+
+
+@achievements_app.command("status")
+def achievements_status() -> None:
+    """Summarize unlocked achievements and upcoming milestones."""
+
+    try:
+        state = achievements.list_achievements()
+    except Exception as exc:  # pragma: no cover - unexpected filesystem issues
+        typer.echo(f"[achievements] failed to load state: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    raw_entries = state.get("achievements", {})
+    entries: list[dict[str, Any]] = []
+    if isinstance(raw_entries, dict):
+        for entry in raw_entries.values():
+            if isinstance(entry, dict):
+                entries.append(entry)
+    entries.sort(key=lambda item: str(item.get("ts", "")))
+
+    if entries:
+        typer.echo("Unlocked achievements:")
+        for entry in entries:
+            key = entry.get("key", "?")
+            ts = entry.get("ts", "?")
+            typer.echo(f"- {key} @ {ts}")
+    else:
+        typer.echo("Unlocked achievements: none yet.")
+
+    next_map = achievements.next_thresholds(state)
+    profit_source = achievements.get_profit_source()
+    profit_label = {"eval": "eval", "live": "live", "both": "eval+live"}.get(
+        profit_source,
+        "eval",
+    )
+    source_labels = {"notional": "live", "profit": profit_label}
+    typer.echo("Next thresholds:")
+    for track in ("notional", "profit"):
+        track_info = next_map.get(track, {})
+        paper_val = achievements.format_threshold(track_info.get("paper"))
+        real_val = achievements.format_threshold(track_info.get("real"))
+        source = source_labels.get(track, "?")
+        typer.echo(f"- {track} [{source}]: paper -> {paper_val}, real -> {real_val}")
 
 
 @achievements_app.command("reset")
@@ -106,6 +246,11 @@ def achievements_badges_cmd(
         "--label-case",
         help="Label casing: lower or title.",
     ),
+    emojis: bool = Option(
+        False,
+        "--emojis/--no-emojis",
+        help="Append 🔓/🔒 markers to badge labels.",
+    ),
 ) -> None:
     """Generate achievements badge markdown or update a README."""
 
@@ -113,6 +258,7 @@ def achievements_badges_cmd(
         badges_line = achievements_badges.render_badges_line(
             style=style,
             label_case=label_case,
+            emojis=emojis,
         )
     except ValueError as exc:
         typer.echo(f"[achievements] {exc}", err=True)
@@ -128,6 +274,117 @@ def achievements_badges_cmd(
             typer.echo(f"[achievements] updated badges in {readme}")
         else:
             typer.echo(f"[achievements] README '{readme}' not found; skipped update.")
+
+
+@orders_app.command("tail")
+def orders_tail(
+    limit: int = typer.Option(20, "--limit", min=1, help="Number of rows to show."),
+    db: str = typer.Option(
+        "sqlite:///./lab.db",
+        "--db",
+        help="SQLite database URL (defaults to ./lab.db).",
+    ),
+) -> None:
+    """Show the most recent recorded orders."""
+
+    try:
+        engine = get_engine(db)
+    except Exception as exc:  # pragma: no cover - depends on runtime environment
+        typer.echo(f"[orders] failed to open database: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    query = (
+        "SELECT rowid AS rowid, ts, broker, symbol, side, qty, price, status "
+        "FROM orders ORDER BY rowid DESC LIMIT :limit"
+    )
+    try:
+        with engine.connect() as conn:
+            rows = list(conn.execute(text(query), {"limit": int(limit)}).mappings())
+    except Exception as exc:  # pragma: no cover - DB runtime issues
+        typer.echo(f"[orders] query failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if not rows:
+        typer.echo("No orders recorded yet.")
+        return
+
+    header = "rowid  ts                        broker   symbol side qty    price   status"
+    typer.echo(header)
+    for row in rows:
+        ts = str(row.get("ts", ""))[:24]
+        broker = str(row.get("broker", ""))
+        symbol = str(row.get("symbol", ""))
+        side = str(row.get("side", ""))
+        qty = _fmt_float(row.get("qty"))
+        price = _fmt_float(row.get("price"))
+        status = str(row.get("status", ""))
+        typer.echo(
+            f"{row.get('rowid', ''):>5}  {ts:<24} {broker:<7} {symbol:<6} {side:<4} {qty:<6} {price:<7} {status}"
+        )
+
+
+@ledger_app.command("tail")
+def ledger_tail(
+    limit: int = typer.Option(20, "--limit", min=1, help="Number of rows to show."),
+    path: Path = typer.Option(
+        Path("./artifacts/live/trades.csv"),
+        "--path",
+        exists=False,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=False,
+        help="Path to the live trades CSV.",
+    ),
+) -> None:
+    """Tail the live trades ledger (CSV)."""
+
+    if not path.exists():
+        typer.echo(f"[ledger] no trades recorded yet at {path}")
+        return
+
+    try:
+        lines = path.read_text().strip().splitlines()
+    except Exception as exc:  # pragma: no cover - filesystem issues
+        typer.echo(f"[ledger] failed to read {path}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if not lines:
+        typer.echo("[ledger] trades file is empty.")
+        return
+
+    header, *rows = lines
+    if not rows:
+        typer.echo("[ledger] no trade rows yet.")
+        return
+
+    tail_rows = rows[-int(limit) :][::-1]
+    typer.echo("epoch                iso_ts                   symbol side qty    price")
+    for line in tail_rows:
+        parts = line.split(",")
+        if len(parts) < 5:
+            continue
+        ts_raw, symbol, side, qty_raw, price_raw = parts[:5]
+        try:
+            epoch = int(float(ts_raw))
+        except ValueError:
+            epoch = 0
+        iso_ts = datetime.fromtimestamp(epoch).isoformat() if epoch else "?"
+        qty = _fmt_float(qty_raw)
+        price = _fmt_float(price_raw)
+        typer.echo(
+            f"{epoch:<20} {iso_ts:<24} {symbol:<6} {side:<4} {qty:<6} {price:<6}"
+        )
+
+
+def _emit_closed_market_hint(allow_after_hours: bool) -> None:
+    """Emit the closed-market hint to STDOUT (tests depend on exact text)."""
+
+    if not allow_after_hours:
+        typer.echo(
+            "[hint] Market is closed. To trade after-hours on paper: export ALLOW_AFTER_HOURS=1",
+            err=False,
+        )
+
 
 @doctor_app.command("alpaca")
 def doctor_alpaca(
@@ -148,6 +405,12 @@ def doctor_alpaca(
         "--base-url",
         help="Override the Alpaca trading API base URL.",
     ),
+    strict: bool = typer.Option(
+        False,
+        "--strict/--no-strict",
+        help="Return non-zero for recoverable issues (defaults to informational-only).",
+        show_default=True,
+    ),
 ) -> None:
     """Validate Alpaca credentials and basic account connectivity."""
 
@@ -156,18 +419,32 @@ def doctor_alpaca(
     if missing:
         for key in missing:
             typer.echo(f"[doctor] missing environment variable: {key}", err=True)
-        raise typer.Exit(code=1)
+        if strict:
+            raise typer.Exit(code=1)
+        return
 
     try:
         client = _build_alpaca_client_from_env(paper=paper, base_url=base_url)
     except Exception as exc:  # pragma: no cover - exercised via tests with stubs
-        typer.echo(f"[doctor] failed to initialize Alpaca client: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+        typer.echo(f"[doctor] failed to initialize Alpaca client: {exc}", err=False)
+        allow_after_hours = _truthy(os.environ.get("ALLOW_AFTER_HOURS"))
+        if not allow_after_hours:
+            _emit_closed_market_hint(allow_after_hours)
+            typer.echo("[doctor] info-only; no trades placed.", err=False)
+        if strict:
+            raise typer.Exit(code=1) from exc
+        return
 
     feed_hint = os.environ.get("ALPACA_FEED")
 
+    market_open: bool | None = None
     try:
         market_open = bool(client.is_market_open())
+        typer.echo(f"market_open: {market_open}", err=False)
+    except Exception:
+        typer.echo("market_open: unavailable", err=False)
+
+    try:
         account = client.get_account() or {}
         cash = _fmt_float(account.get("cash", 0.0))
         equity = _fmt_float(account.get("equity", account.get("portfolio_value", 0.0)))
@@ -178,28 +455,100 @@ def doctor_alpaca(
             or account.get("equity")
         )
         buying_power = _fmt_float(buying_power_val) if buying_power_val is not None else "n/a"
-        price = _fmt_float(client.get_last_price(symbol))
-    except Exception as exc:  # pragma: no cover - depends on runtime client
-        typer.echo(f"[doctor] runtime check failed: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+        typer.echo(
+            f"account: cash={cash} equity={equity} buying_power={buying_power}",
+            err=False,
+        )
+    except Exception:
+        typer.echo("account: unavailable", err=False)
 
-    symbol_upper = symbol.upper()
-    typer.echo(f"market_open: {market_open}")
-    typer.echo(f"account: cash={cash} equity={equity} buying_power={buying_power}")
-    typer.echo(f"latest_price[{symbol_upper}]: {price}")
+    latest_price: Optional[float] = None
+    if symbol:
+        try:
+            latest_price_data = client.get_last_price(symbol)
+            try:
+                latest_price = float(latest_price_data)
+            except (TypeError, ValueError):
+                latest_price = None
+            if latest_price is not None:
+                typer.echo(f"latest_price[{symbol.upper()}]: {latest_price:.2f}", err=False)
+            else:
+                typer.echo(f"latest_price[{symbol.upper()}]: {latest_price_data}", err=False)
+        except Exception:
+            typer.echo(f"latest_price[{symbol.upper()}]: unavailable", err=False)
+
     if feed_hint:
-        typer.echo(f"feed_hint: {feed_hint.lower()}")
+        typer.echo(f"feed_hint: {feed_hint.lower()}", err=False)
 
     gate_enabled = _truthy(os.environ.get("REAL_TRADING_ENABLED"))
-    typer.echo(f"real_trading_enabled: {gate_enabled}")
+    typer.echo(f"real_trading_enabled: {gate_enabled}", err=False)
     live_broker = os.environ.get("LIVE_BROKER", "alpaca_paper")
-    typer.echo(f"live_broker: {live_broker}")
+    typer.echo(f"live_broker: {live_broker}", err=False)
+    allow_after_hours = _truthy(os.environ.get("ALLOW_AFTER_HOURS"))
+    typer.echo(f"allow_after_hours: {allow_after_hours}", err=False)
+
+    if market_open is False and not allow_after_hours:
+        _emit_closed_market_hint(allow_after_hours)
+        typer.echo("[doctor] info-only; no trades placed.", err=False)
+        return
+
+    live_cfg_obj: LiveCfg | SimpleNamespace
+    try:
+        cfg = _load_config_for_doctor(live=not paper)
+        live_cfg_obj = _build_live_cfg(cfg)
+    except Exception:
+        typer.echo("[hint] Using default guidance (could not read live config).", err=False)
+        max_env = os.environ.get("LIVE_MAX_ORDER_USD")
+        max_value: float | None = None
+        if max_env is not None:
+            lowered = max_env.strip().lower()
+            if lowered not in {"", "none", "null"}:
+                try:
+                    max_value = float(max_env)
+                except ValueError:
+                    max_value = None
+        live_cfg_obj = SimpleNamespace(cash=10_000.0, size_pct=5.0, max_order_usd=max_value)
+
+    try:
+        cash_val = float(getattr(live_cfg_obj, "cash", 10_000.0) or 10_000.0)
+    except (TypeError, ValueError):
+        cash_val = 10_000.0
+    raw_size_pct = getattr(live_cfg_obj, "size_pct", 5.0)
+    try:
+        size_pct_val = float(raw_size_pct) if raw_size_pct is not None else 5.0
+    except (TypeError, ValueError):
+        size_pct_val = 5.0
+    max_order = getattr(live_cfg_obj, "max_order_usd", None)
+    cap_env = os.environ.get("LIVE_MAX_ORDER_USD")
+    if cap_env is not None:
+        lowered = cap_env.strip().lower()
+        if lowered in {"", "none", "null"}:
+            max_order = None
+        else:
+            try:
+                max_order = float(cap_env)
+            except ValueError:
+                pass
+
+    if latest_price is not None:
+        est_dollars = cash_val * (size_pct_val / 100.0)
+        est_qty = int(est_dollars // max(latest_price, 1e-9))
+        est_notional = est_qty * latest_price
+        if max_order is not None and est_notional > max_order:
+            typer.echo(
+                f"[hint] Estimated order ${est_notional:0.2f} exceeds max_order_usd ${max_order:0.2f}. "
+                "Bump YAML, export LIVE_MAX_ORDER_USD=10000, or export CLIP_ORDER_TO_MAX=1.",
+                err=False,
+            )
+
     broker_key = live_broker.strip().lower()
     if broker_key == "alpaca_real" and not gate_enabled:
         typer.secho(
             "WARNING: real broker selected but REAL_TRADING_ENABLED is false/absent.",
             fg="red",
         )
+
+    return
 
 
 @agent_app.command("backtest")
@@ -283,20 +632,85 @@ def backtest(config: str = "config/base.yaml") -> None:
     run_backtest(config)
 
 
-@app.command(name="live")
-def live_once(
-    config: str = typer.Option(..., "--config", help="Path to engine config YAML.")
+
+@live_app.callback()
+def live_entrypoint(
+    ctx: Context,
+    config: Optional[str] = Option(
+        None,
+        "--config",
+        help="Path to engine config YAML.",
+    ),
+    loop: bool = Option(
+        False,
+        "--loop/--no-loop",
+        help="Run repeated live steps until max-steps is reached.",
+        show_default=True,
+    ),
+    interval: float = Option(
+        5.0,
+        "--interval",
+        help="Seconds to sleep between live steps when looping.",
+        show_default=True,
+    ),
+    max_steps: int = Option(
+        60,
+        "--max-steps",
+        help="Maximum live steps to run when looping.",
+        show_default=True,
+    ),
+    flat_at_end: bool = Option(
+        False,
+        "--flat-at-end/--no-flat-at-end",
+        help="Flatten any open position after the loop completes.",
+        show_default=True,
+    ),
 ) -> None:
-    """Execute one live step using the configured broker (paper by default)."""
+    """Run live trading once or as a loop, optionally flattening at the end."""
 
-    from tal.backtest.engine import load_config
+    if ctx.invoked_subcommand is not None:
+        return
 
-    cfg, _ = load_config(config)
-    if isinstance(cfg.get("universe"), list) or "components" in cfg:
-        spec = load_agent_config(config)
-        cfg = to_engine_config(spec)
-    res = run_live_once(cfg)
-    print(json.dumps(res, indent=2))
+    if not config:
+        raise BadParameter("Missing --config for live run")
+
+    cfg = _load_engine_config(config)
+    live_cfg = LiveCfg(**cfg.get("live", {}))
+
+    if loop:
+        res = run_live_loop(
+            cfg,
+            max_steps=max_steps,
+            interval=interval,
+            flat_at_end=flat_at_end,
+        )
+        typer.echo(json.dumps(res, indent=2))
+        flatten = res.get("flatten")
+        if isinstance(flatten, Mapping):
+            _maybe_record_live_profit(flatten, live_cfg)
+    else:
+        res = run_live_once(cfg)
+        typer.echo(json.dumps(res, indent=2))
+
+
+@live_app.command("close")
+def live_close(
+    config: str = Option(..., "--config", help="Path to engine config YAML."),
+) -> None:
+    """Flatten the configured symbol position for the target broker."""
+
+    cfg = _load_engine_config(config)
+    broker, price_fn, context = build_broker_and_price_fn(cfg)
+    symbol = context.symbols[0] if context.symbols else (context.live_cfg.symbol or "SPY")
+    flatten = flatten_symbol(
+        broker,
+        symbol,
+        price_fn,
+        context=context,
+        trades_path=context.trades_path,
+    )
+    typer.echo(json.dumps(flatten, indent=2))
+    _maybe_record_live_profit(flatten, context.live_cfg)
 
 
 @app.command(name="eval")
@@ -403,7 +817,8 @@ def evaluate(
     else:
         typer.echo(format_table(rows, group=group_key))
 
-    if pnl_dollars > 0:
+    profit_source = achievements.get_profit_source()
+    if pnl_dollars > 0 and profit_source in {"eval", "both"}:
         try:
             unlocked = achievements.record_profit_dollars(pnl_dollars, achievement_mode)
         except Exception as exc:  # pragma: no cover - best effort logging
